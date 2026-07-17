@@ -48,9 +48,23 @@ Abre em `http://localhost:8501`. As credenciais da ANA são lidas, nesta ordem, 
 Se você já tem uma página na Vercel, basta colocar lá um link (ou um `<iframe>`) para
 essa URL do Streamlit.
 
+## Fontes de dados da ANA
+
+No modo **API HidroWeb** há duas fontes selecionáveis:
+
+- **⚡ Histórica (convencional, recomendada)** — usa o webservice legado
+  `ServiceANA.asmx/HidroSerieHistorica`, a mesma fonte dos downloads do site HidroWeb.
+  Traz **toda a série numa única requisição**, é praticamente instantânea e **não exige
+  credenciais**. É a fonte adequada para curvas IDF (estações convencionais, com séries
+  históricas longas). Basta informar o **código da estação**.
+- **📡 Telemétrica (automática)** — usa a API autenticada `EstacoesTelemetricas`. Só
+  cobre estações automáticas (dados a partir de ~2001), exige token (ANA_USER/ANA_PASS)
+  e vai **ano a ano** (limite de 366 dias por requisição), podendo levar vários minutos.
+  Permite listar estações por UF.
+
 ## Observações
 
-- A busca automática na ANA vai ano a ano e pode levar **vários minutos** em períodos
-  longos; uma barra de progresso mostra o andamento. Prefira intervalos menores.
-- Alternativa sem espera: baixe o CSV no HidroWeb e use o modo **Arquivo CSV/TXT**.
+- Alternativa também instantânea: baixe o CSV no HidroWeb e use o modo **Arquivo CSV/TXT**.
+- Se uma estação retornar "sem dados", experimente outro código — nem toda estação do
+  inventário telemétrico possui série histórica de chuva.
 - Nunca faça commit de `ana.env` nem de `.streamlit/secrets.toml`.
