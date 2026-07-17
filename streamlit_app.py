@@ -18,6 +18,7 @@ import streamlit as st
 from calculations import (
     run_full_analysis,
     parse_station_code,
+    obter_serie_chuva_historica,
     AnaHidroWebService,
     UserError,
 )
@@ -96,6 +97,18 @@ def buscar_serie_ana(user_id: str, estacao: str, y0: int, y1: int, _progresso=No
     return df['Precipitacao'].astype(str).tolist()
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def buscar_serie_historica(estacao: str, y0: int, y1: int) -> list[str]:
+    """
+    Busca a série anual pelo webservice histórico da ANA (estações convencionais).
+
+    Não requer credenciais e traz todo o período numa única requisição. Cacheada
+    por (estação, período) durante 1 h, então reconsultas são instantâneas.
+    """
+    df = obter_serie_chuva_historica(estacao, y0, y1)
+    return df['Precipitacao'].astype(str).tolist()
+
+
 # ── Textos da interface (PT / EN) ─────────────────────────────────────────────
 UI = {
     'PT': {
@@ -114,6 +127,12 @@ UI = {
         'upload': 'Arquivo ANA/HidroWeb (CSV ou TXT)',
         'manual_lbl': 'Dados manuais — um valor de máxima anual (mm) por linha',
         'manual_ph': '95.2\n88.5\n120.0\n76.4',
+        'api_fonte': 'Fonte de dados',
+        'fonte_hist': '⚡ Histórica (convencional, recomendada)',
+        'fonte_tele': '📡 Telemétrica (automática)',
+        'api_cod_manual': 'Código da estação (opcional)',
+        'api_cod_manual_ph': 'ex.: 1943000',
+        'hint_hist': 'Rápida e sem credenciais: traz toda a série de uma vez. Ideal para curvas IDF.',
         'api_uf': 'UF da Estação',
         'api_buscar': '🔍 Buscar estações da UF',
         'api_sel_est': 'Estação pluviométrica',
@@ -163,6 +182,12 @@ UI = {
         'upload': 'ANA/HidroWeb file (CSV or TXT)',
         'manual_lbl': 'Manual data — one annual maximum (mm) per line',
         'manual_ph': '95.2\n88.5\n120.0\n76.4',
+        'api_fonte': 'Data source',
+        'fonte_hist': '⚡ Historical (conventional, recommended)',
+        'fonte_tele': '📡 Telemetric (automatic)',
+        'api_cod_manual': 'Station code (optional)',
+        'api_cod_manual_ph': 'e.g. 1943000',
+        'hint_hist': 'Fast and credential-free: fetches the whole series at once. Ideal for IDF curves.',
         'api_uf': 'Station State (UF)',
         'api_buscar': '🔍 Search stations in state',
         'api_sel_est': 'Rain gauge station',
@@ -250,26 +275,37 @@ elif method == L['m_manual']:
     manual_text = st.sidebar.text_area(L['manual_lbl'], height=180, placeholder=L['manual_ph'])
 
 elif method == L['m_api']:
-    st.sidebar.caption(L['api_hint'])
-    uf = st.sidebar.selectbox(L['api_uf'], sorted(AnaHidroWebService.UFS_BRASIL))
+    fonte = st.sidebar.radio(L['api_fonte'], [L['fonte_hist'], L['fonte_tele']])
+    usar_historica = (fonte == L['fonte_hist'])
+    st.sidebar.caption(L['hint_hist'] if usar_historica else L['api_hint'])
 
-    if st.sidebar.button(L['api_buscar'], use_container_width=True):
-        try:
-            with st.spinner(L['api_buscar']):
-                estacoes = cliente_ana().listar_estacoes_por_uf(uf)
-            if not estacoes:
-                st.sidebar.warning(L['no_stations'])
-            st.session_state.ana_stations = estacoes
-        except UserError as e:
-            st.sidebar.error(str(e))
-        except Exception as e:
-            st.sidebar.error(f'ANA: {e}')
+    # A busca por UF usa o inventário telemétrico (requer credenciais). Na fonte
+    # histórica, o usuário informa o código diretamente — sem necessidade de login.
+    if not usar_historica:
+        uf = st.sidebar.selectbox(L['api_uf'], sorted(AnaHidroWebService.UFS_BRASIL))
 
-    estacoes = st.session_state.ana_stations
-    if estacoes:
-        rotulos = [f"{e['codigo']} — {e['nome']}" for e in estacoes]
-        escolha = st.sidebar.selectbox(L['api_sel_est'], rotulos)
-        estacao = escolha.split(' — ')[0]
+        if st.sidebar.button(L['api_buscar'], use_container_width=True):
+            try:
+                with st.spinner(L['api_buscar']):
+                    estacoes = cliente_ana().listar_estacoes_por_uf(uf)
+                if not estacoes:
+                    st.sidebar.warning(L['no_stations'])
+                st.session_state.ana_stations = estacoes
+            except UserError as e:
+                st.sidebar.error(str(e))
+            except Exception as e:
+                st.sidebar.error(f'ANA: {e}')
+
+        estacoes = st.session_state.ana_stations
+        if estacoes:
+            rotulos = [f"{e['codigo']} — {e['nome']}" for e in estacoes]
+            escolha = st.sidebar.selectbox(L['api_sel_est'], rotulos)
+            estacao = escolha.split(' — ')[0]
+
+    # Campo de código manual (obrigatório na fonte histórica, opcional na telemétrica).
+    cod_manual = st.sidebar.text_input(L['api_cod_manual'], placeholder=L['api_cod_manual_ph'])
+    if cod_manual.strip():
+        estacao = cod_manual.strip()
 
     col_a, col_b = st.sidebar.columns(2)
     api_y0 = col_a.number_input(L['y0'], min_value=1900, max_value=2100, value=1990, step=1)
@@ -287,15 +323,18 @@ elif method == L['m_api']:
                 aviso.caption(f'{ano} ({feito}/{total})')
 
             try:
-                cliente_ana()  # valida credenciais (levanta UserError se faltarem)
-                user_id, _ = ler_credenciais_ana()
                 with st.spinner(L['fetching']):
-                    valores = buscar_serie_ana(
-                        user_id, estacao, int(api_y0), int(api_y1), _progresso=_prog)
+                    if usar_historica:
+                        valores = buscar_serie_historica(estacao, int(api_y0), int(api_y1))
+                    else:
+                        cliente_ana()  # valida credenciais (levanta UserError se faltarem)
+                        user_id, _ = ler_credenciais_ana()
+                        valores = buscar_serie_ana(
+                            user_id, estacao, int(api_y0), int(api_y1), _progresso=_prog)
                 st.session_state.ana_series_text = '\n'.join(valores)
                 aviso.empty()
                 barra.empty()
-                st.sidebar.success(L['fetch_ok'].format(n=len(df)))
+                st.sidebar.success(L['fetch_ok'].format(n=len(valores)))
             except UserError as e:
                 st.sidebar.error(str(e))
             except Exception as e:

@@ -7,6 +7,7 @@ import logging
 import io
 import time
 import requests
+import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -368,6 +369,153 @@ class AnaHidroWebService:
 
         logger.info(f"✅ Série obtida: {len(df_max_anual)} anos para a estação {codigo_estacao}")
         return df_max_anual.sort_values("Ano").reset_index(drop=True)
+
+
+# ── Série histórica (webservice legado, estações convencionais) ───────────────
+#
+# O serviço ServiceANA.asmx/HidroSerieHistorica é público (sem autenticação) e
+# devolve toda a série da estação numa ÚNICA requisição — é a mesma fonte usada
+# pelos downloads do site HidroWeb. Serve estações convencionais, cujas séries
+# longas são as adequadas para curvas IDF. Não tem o limite de 366 dias da API
+# telemétrica, portanto dispensa o laço ano-a-ano (muito mais rápido).
+SERIE_HISTORICA_URL = "http://telemetriaws1.ana.gov.br/ServiceANA.asmx/HidroSerieHistorica"
+
+
+def _localname(tag: str) -> str:
+    """Nome da tag sem o namespace XML (ex.: '{http://x}Chuva01' → 'Chuva01')."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _num_ptbr(valor) -> float:
+    """Converte texto numérico da ANA para float, aceitando vírgula decimal."""
+    if valor is None:
+        return float("nan")
+    try:
+        return float(str(valor).strip().replace(",", "."))
+    except ValueError:
+        return float("nan")
+
+
+def obter_serie_chuva_historica(codigo_estacao: str, ano_inicio: int = None,
+                                ano_fim: int = None, progresso=None,
+                                timeout: int = 180) -> pd.DataFrame:
+    """
+    Retorna a máxima anual de chuva diária (mm) via webservice histórico da ANA.
+
+    Diferente da API telemétrica (uma requisição por ano, com token), esta rota
+    devolve toda a série da estação de uma vez e sem autenticação. Cada registro
+    do XML é um MÊS, com as chuvas diárias em Chuva01..Chuva31; a máxima do mês é
+    o maior valor diário, e a máxima anual é o maior valor mensal do ano.
+
+    'progresso' (opcional) é chamado uma vez ao concluir, para compatibilidade
+    com a interface (aqui só há uma requisição, então não há andamento por ano).
+    """
+    codigo_estacao = str(codigo_estacao).strip()
+    params = {
+        "codEstacao": codigo_estacao,
+        "dataInicio": f"01/01/{ano_inicio}" if ano_inicio else "",
+        "dataFim": f"31/12/{ano_fim}" if ano_fim else "",
+        "tipoDados": "2",          # 2 = chuva
+        "nivelConsistencia": "",   # vazio = bruto e consistido
+    }
+
+    # Retry simples para erros de conexão/indisponibilidade transitória.
+    res = None
+    for tentativa in range(4):
+        try:
+            res = requests.get(SERIE_HISTORICA_URL, params=params, timeout=timeout)
+        except requests.RequestException as e:
+            if tentativa == 3:
+                raise ValueError(f"Falha de conexão com o webservice histórico da ANA: {e}")
+            time.sleep(2 ** tentativa)
+            continue
+        if res.status_code == 200:
+            break
+        if res.status_code >= 500 and tentativa < 3:
+            time.sleep(2 ** tentativa)
+            continue
+        res.raise_for_status()
+
+    try:
+        root = ET.fromstring(res.content)
+    except ET.ParseError as e:
+        raise ValueError(f"Resposta inválida do webservice histórico da ANA: {e}")
+
+    # A ANA sinaliza ausência de dados numa tabela <Error>…</Error>.
+    for el in root.iter():
+        if _localname(el.tag) == "Error" and (el.text or "").strip():
+            raise ValueError(
+                f"A estação {codigo_estacao} não possui série de chuva na base histórica "
+                f"da ANA no período solicitado. Verifique o código ou tente outra estação. "
+                f"(ANA: {el.text.strip()})"
+            )
+
+    registros = [el for el in root.iter() if _localname(el.tag) == "SerieHistorica"]
+    if not registros:
+        raise ValueError(
+            f"A estação {codigo_estacao} não retornou dados de chuva na base histórica da ANA."
+        )
+
+    # Um registro por mês: extrai (mês, nível de consistência, máxima diária do mês).
+    linhas = []
+    for reg in registros:
+        campos = {_localname(f.tag): (f.text or "") for f in reg}
+        data_mes = pd.to_datetime(campos.get("DataHora"), errors="coerce")
+        if pd.isna(data_mes):
+            continue
+        nivel = _num_ptbr(campos.get("NivelConsistencia"))
+        nivel = 0 if np.isnan(nivel) else nivel
+
+        # Máxima do mês: maior das chuvas diárias; se ausentes, usa o campo 'Maxima'.
+        diarias = [_num_ptbr(campos.get(f"Chuva{d:02d}")) for d in range(1, 32)]
+        diarias = [v for v in diarias if np.isfinite(v) and v >= 0]
+        if diarias:
+            max_mes = max(diarias)
+        else:
+            max_mes = _num_ptbr(campos.get("Maxima"))
+        if not np.isfinite(max_mes):
+            continue
+
+        linhas.append({"DataHora": data_mes, "Consistencia": nivel, "Maxima_mm": max_mes})
+
+    df = pd.DataFrame(linhas)
+    if df.empty:
+        raise ValueError(
+            f"A estação {codigo_estacao} retornou registros, mas sem máximas diárias "
+            f"utilizáveis na base histórica da ANA."
+        )
+
+    # O mesmo mês pode vir em bruto (1) e consistido (2): mantém o de maior nível.
+    df = (df.sort_values("Consistencia")
+            .drop_duplicates(subset=["DataHora"], keep="last"))
+    df["Ano"] = df["DataHora"].dt.year
+
+    if ano_inicio is not None:
+        df = df[df["Ano"] >= ano_inicio]
+    if ano_fim is not None:
+        df = df[df["Ano"] <= ano_fim]
+
+    df_max_anual = (df.groupby("Ano")["Maxima_mm"].max()
+                      .reset_index()
+                      .rename(columns={"Maxima_mm": "Precipitacao"}))
+
+    if df_max_anual.empty:
+        raise ValueError(
+            f"A estação {codigo_estacao} não possui máximas de chuva no período "
+            f"{ano_inicio or '—'}–{ano_fim or '—'} na base histórica da ANA."
+        )
+
+    if progresso is not None:
+        try:
+            progresso(1, 1, int(df_max_anual["Ano"].max()))
+        except Exception:
+            pass
+
+    logger.info(
+        f"✅ Série histórica obtida: {len(df_max_anual)} anos para a estação {codigo_estacao} "
+        f"(webservice legado, sem autenticação)."
+    )
+    return df_max_anual.sort_values("Ano").reset_index(drop=True)
 
 
 # ── Core Calculations ─────────────────────────────────────────────────────────
