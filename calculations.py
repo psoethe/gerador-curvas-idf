@@ -518,6 +518,61 @@ def obter_serie_chuva_historica(codigo_estacao: str, ano_inicio: int = None,
     return df_max_anual.sort_values("Ano").reset_index(drop=True)
 
 
+# Sigla da UF → nome do estado em maiúsculas, como o inventário legado espera.
+UF_PARA_NOME = {
+    'AC': 'ACRE', 'AL': 'ALAGOAS', 'AP': 'AMAPÁ', 'AM': 'AMAZONAS', 'BA': 'BAHIA',
+    'CE': 'CEARÁ', 'DF': 'DISTRITO FEDERAL', 'ES': 'ESPÍRITO SANTO', 'GO': 'GOIÁS',
+    'MA': 'MARANHÃO', 'MT': 'MATO GROSSO', 'MS': 'MATO GROSSO DO SUL', 'MG': 'MINAS GERAIS',
+    'PA': 'PARÁ', 'PB': 'PARAÍBA', 'PR': 'PARANÁ', 'PE': 'PERNAMBUCO', 'PI': 'PIAUÍ',
+    'RJ': 'RIO DE JANEIRO', 'RN': 'RIO GRANDE DO NORTE', 'RS': 'RIO GRANDE DO SUL',
+    'RO': 'RONDÔNIA', 'RR': 'RORAIMA', 'SC': 'SANTA CATARINA', 'SP': 'SÃO PAULO',
+    'SE': 'SERGIPE', 'TO': 'TOCANTINS',
+}
+
+HIDRO_INVENTARIO_URL = "http://telemetriaws1.ana.gov.br/ServiceANA.asmx/HidroInventario"
+
+
+def listar_estacoes_historicas(uf: str, timeout: int = 120) -> list:
+    """
+    Lista estações pluviométricas de uma UF pelo inventário legado da ANA
+    (ServiceANA.asmx/HidroInventario), sem autenticação.
+
+    Retorna [{'codigo': str, 'nome': str}, ...] ordenado por nome — mesmo formato
+    de AnaHidroWebService.listar_estacoes_por_uf, para uso intercambiável na UI.
+    """
+    nome_estado = UF_PARA_NOME.get(str(uf).strip().upper())
+    if not nome_estado:
+        logger.error(f"UF sem mapeamento para nome de estado: {uf!r}")
+        return []
+
+    params = {
+        "codEstDE": "", "codEstATE": "", "tpEst": "2",   # 2 = pluviométrica
+        "nmEst": "", "nmRio": "", "codSubBacia": "", "codBacia": "",
+        "nmMunicipio": "", "nmEstado": nome_estado, "sgResp": "", "sgOper": "",
+        "telemetrica": "",
+    }
+    try:
+        res = requests.get(HIDRO_INVENTARIO_URL, params=params, timeout=timeout)
+        res.raise_for_status()
+        root = ET.fromstring(res.content)
+    except (requests.RequestException, ET.ParseError) as e:
+        logger.error(f"Erro ao listar estações históricas de {uf}: {e}")
+        return []
+
+    lista = []
+    for tab in root.iter():
+        if _localname(tab.tag) != "Table":
+            continue
+        campos = {_localname(f.tag): (f.text or "") for f in tab}
+        cod = (campos.get("Codigo") or "").strip()
+        if not cod:
+            continue
+        lista.append({"codigo": cod, "nome": (campos.get("Nome") or "Desconhecida").strip()})
+
+    logger.info(f"✅ Inventário legado: {len(lista)} estações pluviométricas em {uf}")
+    return sorted(lista, key=lambda x: x["nome"])
+
+
 # ── Core Calculations ─────────────────────────────────────────────────────────
 
 def get_gumbel_constants(n: int) -> tuple[float, float]:

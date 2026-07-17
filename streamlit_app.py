@@ -19,6 +19,7 @@ from calculations import (
     run_full_analysis,
     parse_station_code,
     obter_serie_chuva_historica,
+    listar_estacoes_historicas,
     AnaHidroWebService,
     UserError,
 )
@@ -107,6 +108,12 @@ def buscar_serie_historica(estacao: str, y0: int, y1: int) -> list[str]:
     """
     df = obter_serie_chuva_historica(estacao, y0, y1)
     return df['Precipitacao'].astype(str).tolist()
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def listar_estacoes_hist(uf: str) -> list:
+    """Lista estações pluviométricas de uma UF pelo inventário legado (sem login)."""
+    return listar_estacoes_historicas(uf)
 
 
 # ── Textos da interface (PT / EN) ─────────────────────────────────────────────
@@ -279,30 +286,32 @@ elif method == L['m_api']:
     usar_historica = (fonte == L['fonte_hist'])
     st.sidebar.caption(L['hint_hist'] if usar_historica else L['api_hint'])
 
-    # A busca por UF usa o inventário telemétrico (requer credenciais). Na fonte
-    # histórica, o usuário informa o código diretamente — sem necessidade de login.
-    if not usar_historica:
-        uf = st.sidebar.selectbox(L['api_uf'], sorted(AnaHidroWebService.UFS_BRASIL))
+    # Busca de estações por UF disponível nas duas fontes: a histórica usa o
+    # inventário legado (sem login); a telemétrica usa o inventário autenticado.
+    uf = st.sidebar.selectbox(L['api_uf'], sorted(AnaHidroWebService.UFS_BRASIL))
 
-        if st.sidebar.button(L['api_buscar'], use_container_width=True):
-            try:
-                with st.spinner(L['api_buscar']):
+    if st.sidebar.button(L['api_buscar'], use_container_width=True):
+        try:
+            with st.spinner(L['api_buscar']):
+                if usar_historica:
+                    estacoes = listar_estacoes_hist(uf)
+                else:
                     estacoes = cliente_ana().listar_estacoes_por_uf(uf)
-                if not estacoes:
-                    st.sidebar.warning(L['no_stations'])
-                st.session_state.ana_stations = estacoes
-            except UserError as e:
-                st.sidebar.error(str(e))
-            except Exception as e:
-                st.sidebar.error(f'ANA: {e}')
+            if not estacoes:
+                st.sidebar.warning(L['no_stations'])
+            st.session_state.ana_stations = estacoes
+        except UserError as e:
+            st.sidebar.error(str(e))
+        except Exception as e:
+            st.sidebar.error(f'ANA: {e}')
 
-        estacoes = st.session_state.ana_stations
-        if estacoes:
-            rotulos = [f"{e['codigo']} — {e['nome']}" for e in estacoes]
-            escolha = st.sidebar.selectbox(L['api_sel_est'], rotulos)
-            estacao = escolha.split(' — ')[0]
+    estacoes = st.session_state.ana_stations
+    if estacoes:
+        rotulos = [f"{e['codigo']} — {e['nome']}" for e in estacoes]
+        escolha = st.sidebar.selectbox(L['api_sel_est'], rotulos)
+        estacao = escolha.split(' — ')[0]
 
-    # Campo de código manual (obrigatório na fonte histórica, opcional na telemétrica).
+    # Código manual — alternativa direta à busca por UF (opcional em ambas as fontes).
     cod_manual = st.sidebar.text_input(L['api_cod_manual'], placeholder=L['api_cod_manual_ph'])
     if cod_manual.strip():
         estacao = cod_manual.strip()
