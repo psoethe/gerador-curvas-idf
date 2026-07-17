@@ -80,6 +80,22 @@ def cliente_ana():
     return AnaHidroWebService(user, pwd)
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def buscar_serie_ana(user_id: str, estacao: str, y0: int, y1: int, _progresso=None) -> list[str]:
+    """
+    Busca a série anual de máximas na ANA, com cache.
+
+    O resultado fica cacheado por (usuário, estação, período) durante 1 h, então
+    refazer a mesma consulta é instantâneo — não rebaixa tudo de novo da API.
+    A senha é relida aqui dentro para não entrar na chave de cache, e o callback
+    de progresso leva '_' no nome para o Streamlit não tentar incluí-lo na chave.
+    """
+    _, pwd = ler_credenciais_ana()
+    cliente = AnaHidroWebService(user_id, pwd)
+    df = cliente.obter_serie_chuva(estacao, y0, y1, progresso=_progresso)
+    return df['Precipitacao'].astype(str).tolist()
+
+
 # ── Textos da interface (PT / EN) ─────────────────────────────────────────────
 UI = {
     'PT': {
@@ -271,11 +287,12 @@ elif method == L['m_api']:
                 aviso.caption(f'{ano} ({feito}/{total})')
 
             try:
+                cliente_ana()  # valida credenciais (levanta UserError se faltarem)
+                user_id, _ = ler_credenciais_ana()
                 with st.spinner(L['fetching']):
-                    df = cliente_ana().obter_serie_chuva(
-                        estacao, int(api_y0), int(api_y1), progresso=_prog)
-                st.session_state.ana_series_text = '\n'.join(
-                    df['Precipitacao'].astype(str).tolist())
+                    valores = buscar_serie_ana(
+                        user_id, estacao, int(api_y0), int(api_y1), _progresso=_prog)
+                st.session_state.ana_series_text = '\n'.join(valores)
                 aviso.empty()
                 barra.empty()
                 st.sidebar.success(L['fetch_ok'].format(n=len(df)))

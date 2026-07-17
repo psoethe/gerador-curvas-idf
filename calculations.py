@@ -272,7 +272,7 @@ class AnaHidroWebService:
 
     # ── Série de chuvas ──────────────────────────────────────────────────────
     def obter_serie_chuva(self, codigo_estacao: str, ano_inicio: int, ano_fim: int,
-                          progresso=None) -> pd.DataFrame:
+                          progresso=None, pausa_seg: float = 0.25) -> pd.DataFrame:
         """
         Retorna a máxima anual de chuva diária (mm) por ano.
 
@@ -290,6 +290,10 @@ class AnaHidroWebService:
         total_anos = ano_fim - ano_inicio + 1
 
         # Uma requisição por ano civil: sempre abaixo do limite de 366 dias.
+        # A pausa entre anos é adaptativa: começa curta e só recua quando a ANA
+        # sinaliza limitação (erro transitório ou falha de conexão), evitando
+        # esperas desnecessárias quando o serviço está respondendo bem.
+        pausa = pausa_seg
         for indice, ano in enumerate(range(ano_inicio, ano_fim + 1)):
             params = {
                 "Código da Estação": codigo_estacao,
@@ -301,12 +305,15 @@ class AnaHidroWebService:
                 res = self._get("/HidroSerieChuva/v1", params=params, timeout=180)
                 if res.status_code in (200, 404):
                     anos_ok += 1
+                    pausa = pausa_seg  # resposta limpa → volta à pausa mínima
                     if res.status_code == 200:
                         todos_os_dados.extend(res.json().get("items") or [])
                 else:
                     falhas.append(f"{ano}: HTTP {res.status_code} — {self._mensagem_erro(res)}")
+                    pausa = min(pausa * 2, 3.0)  # sob limitação → recua
             except Exception as e:
                 falhas.append(f"{ano}: {type(e).__name__}")
+                pausa = min(pausa * 2, 3.0)
 
             if progresso is not None:
                 try:
@@ -314,7 +321,9 @@ class AnaHidroWebService:
                 except Exception:
                     pass
 
-            time.sleep(0.6)
+            # Nenhuma pausa após o último ano — não há próxima requisição.
+            if indice < total_anos - 1:
+                time.sleep(pausa)
 
         if falhas:
             logger.warning("Períodos com falha na ANA: " + "; ".join(falhas[:5]))
