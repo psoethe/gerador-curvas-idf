@@ -121,6 +121,7 @@ UI = {
     'PT': {
         'title': '🌧️ Gerador de Curvas IDF',
         'subtitle': 'Intensidade – Duração – Frequência · Método de Gumbel + Taborga + Sherman',
+        'footer': 'Desenvolvido por <a href="https://pedrosoethe.vercel.app/engenheiro/soethe-ii" target="_blank">Soethe Infrastructure Inteligence</a>',
         'sidebar_cfg': '⚙️ Configuração',
         'meta': 'Identificação',
         'resp': 'Responsável Técnico',
@@ -176,6 +177,7 @@ UI = {
     'EN': {
         'title': '🌧️ IDF Curve Generator',
         'subtitle': 'Intensity – Duration – Frequency · Gumbel + Taborga + Sherman method',
+        'footer': 'Developed by <a href="https://pedrosoethe.vercel.app/engenheiro/soethe-ii" target="_blank">Soethe Infrastructure Inteligence</a>',
         'sidebar_cfg': '⚙️ Configuration',
         'meta': 'Identification',
         'resp': 'Technical Responsible',
@@ -373,6 +375,12 @@ with st.sidebar.expander('🗺️ ' + L['region'], expanded=True):
 # ── Botão principal ───────────────────────────────────────────────────────────
 run = st.sidebar.button(L['run'], type='primary', use_container_width=True)
 
+# ── Crédito na barra lateral ──────────────────────────────────────────────────
+st.sidebar.markdown(
+    f"<div style='color:#888; font-size:0.8em; padding-top:1rem;'>{L['footer']}</div>",
+    unsafe_allow_html=True,
+)
+
 
 # ── Execução da análise ───────────────────────────────────────────────────────
 def figuras(results):
@@ -494,3 +502,11 @@ else:
                 use_container_width=True)
         except Exception as e:
             st.warning(f'Word: {e}')
+
+# ── Rodapé / créditos ─────────────────────────────────────────────────────────
+st.divider()
+st.markdown(
+    f"<div style='text-align:center; color:#888; font-size:0.85em; padding:0.5rem 0;'>"
+    f"{L['footer']}</div>",
+    unsafe_allow_html=True,
+)
