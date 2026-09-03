@@ -455,17 +455,11 @@ def obter_serie_chuva_historica(codigo_estacao: str, ano_inicio: int = None,
     # A ANA sinaliza ausência de dados numa tabela <Error>…</Error>.
     for el in root.iter():
         if _localname(el.tag) == "Error" and (el.text or "").strip():
-            raise ValueError(
-                f"A estação {codigo_estacao} não possui série de chuva na base histórica "
-                f"da ANA no período solicitado. Verifique o código ou tente outra estação. "
-                f"(ANA: {el.text.strip()})"
-            )
+            return pd.DataFrame(columns=["Ano", "Precipitacao"])
 
     registros = [el for el in root.iter() if _localname(el.tag) == "SerieHistorica"]
     if not registros:
-        raise ValueError(
-            f"A estação {codigo_estacao} não retornou dados de chuva na base histórica da ANA."
-        )
+        return pd.DataFrame(columns=["Ano", "Precipitacao"])
 
     # Um registro por mês: extrai (mês, nível de consistência, máxima diária do mês).
     linhas = []

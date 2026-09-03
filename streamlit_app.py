@@ -15,10 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 import folium
-from folium.plugins import Fullscreen
+from folium.plugins import Fullscreen, Draw
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 import pandas as pd
+import unicodedata
 
 from calculations import (
     run_full_analysis,
@@ -140,15 +141,87 @@ def listar_estacoes_hist(uf: str) -> list:
     return listar_estacoes_historicas(uf)
 
 
+def _remover_acentos(texto: str) -> str:
+    """Remove acentos e converte para minúsculas para matching resiliente."""
+    return ''.join(c for c in unicodedata.normalize('NFD', str(texto))
+                   if unicodedata.category(c) != 'Mn').lower().strip()
+
+
+# Base instantânea das 27 capitais e principais cidades do Brasil (sem necessidade de rede)
+CIDADES_BRASIL = {
+    'recife': (-8.0476, -34.8770, 'Recife, PE, Brasil', 'PE'),
+    'sao paulo': (-23.5505, -46.6333, 'São Paulo, SP, Brasil', 'SP'),
+    'rio de janeiro': (-22.9068, -43.1729, 'Rio de Janeiro, RJ, Brasil', 'RJ'),
+    'salvador': (-12.9777, -38.5016, 'Salvador, BA, Brasil', 'BA'),
+    'fortaleza': (-3.7319, -38.5267, 'Fortaleza, CE, Brasil', 'CE'),
+    'belo horizonte': (-19.9167, -43.9345, 'Belo Horizonte, MG, Brasil', 'MG'),
+    'brasilia': (-15.7975, -47.8919, 'Brasília, DF, Brasil', 'DF'),
+    'curitiba': (-25.4284, -49.2733, 'Curitiba, PR, Brasil', 'PR'),
+    'manaus': (-3.1190, -60.0217, 'Manaus, AM, Brasil', 'AM'),
+    'belem': (-1.4558, -48.4902, 'Belém, PA, Brasil', 'PA'),
+    'porto alegre': (-30.0346, -51.2177, 'Porto Alegre, RS, Brasil', 'RS'),
+    'goiania': (-16.6869, -49.2648, 'Goiânia, GO, Brasil', 'GO'),
+    'sao luis': (-2.5307, -44.3068, 'São Luís, MA, Brasil', 'MA'),
+    'maceio': (-9.6658, -35.7351, 'Maceió, AL, Brasil', 'AL'),
+    'natal': (-5.7945, -35.2110, 'Natal, RN, Brasil', 'RN'),
+    'campo grande': (-20.4697, -54.6201, 'Campo Grande, MS, Brasil', 'MS'),
+    'teresina': (-5.0920, -42.8038, 'Teresina, PI, Brasil', 'PI'),
+    'joao pessoa': (-7.1195, -34.8450, 'João Pessoa, PB, Brasil', 'PB'),
+    'aracaju': (-10.9472, -37.0731, 'Aracaju, SE, Brasil', 'SE'),
+    'cuiaba': (-15.6014, -56.0979, 'Cuiabá, MT, Brasil', 'MT'),
+    'porto velho': (-8.7619, -63.9039, 'Porto Velho, RO, Brasil', 'RO'),
+    'florianopolis': (-27.5954, -48.5480, 'Florianópolis, SC, Brasil', 'SC'),
+    'macapa': (0.0389, -51.0664, 'Macapá, AP, Brasil', 'AP'),
+    'rio branco': (-9.9753, -67.8249, 'Rio Branco, AC, Brasil', 'AC'),
+    'vitoria': (-20.3155, -40.3128, 'Vitória, ES, Brasil', 'ES'),
+    'boa vista': (2.8235, -60.6758, 'Boa Vista, RR, Brasil', 'RR'),
+    'palmas': (-10.2491, -48.3243, 'Palmas, TO, Brasil', 'TO'),
+    'campinas': (-22.9099, -47.0626, 'Campinas, SP, Brasil', 'SP'),
+    'taubate': (-23.0289, -45.5569, 'Taubaté, SP, Brasil', 'SP'),
+    'sao jose dos campos': (-23.1791, -45.8872, 'São José dos Campos, SP, Brasil', 'SP'),
+    'sorocaba': (-23.5015, -47.4526, 'Sorocaba, SP, Brasil', 'SP'),
+    'ribeirao preto': (-21.1767, -47.8108, 'Ribeirão Preto, SP, Brasil', 'SP'),
+    'uberlandia': (-18.9186, -48.2772, 'Uberlândia, MG, Brasil', 'MG'),
+    'juiz de fora': (-21.7587, -43.3496, 'Juiz de Fora, MG, Brasil', 'MG'),
+    'londrina': (-23.3045, -51.1696, 'Londrina, PR, Brasil', 'PR'),
+    'maringa': (-23.4209, -51.9331, 'Maringá, PR, Brasil', 'PR'),
+    'joinville': (-26.3045, -48.8487, 'Joinville, SC, Brasil', 'SC'),
+    'caxias do sul': (-29.1678, -51.1794, 'Caxias do Sul, RS, Brasil', 'RS'),
+    'pelotas': (-31.7654, -52.3376, 'Pelotas, RS, Brasil', 'RS'),
+    'niteroi': (-22.8833, -43.1036, 'Niterói, RJ, Brasil', 'RJ'),
+    'santos': (-23.9608, -46.3331, 'Santos, SP, Brasil', 'SP'),
+    'caruaru': (-8.2837, -35.9754, 'Caruaru, PE, Brasil', 'PE'),
+    'petrolina': (-9.3989, -40.5008, 'Petrolina, PE, Brasil', 'PE'),
+    'campina grande': (-7.2307, -35.8817, 'Campina Grande, PB, Brasil', 'PB'),
+    'feira de santana': (-12.2664, -38.9663, 'Feira de Santana, BA, Brasil', 'BA'),
+    'vitoria da conquista': (-14.8661, -40.8394, 'Vitória da Conquista, BA, Brasil', 'BA'),
+    'anapolis': (-16.3268, -48.9534, 'Anápolis, GO, Brasil', 'GO'),
+}
+
+
 @st.cache_data(show_spinner=False, ttl=86400)
 def geocodificar_local(query: str):
-    """Geocodifica endereço ou município brasileiro via OpenStreetMap Nominatim."""
+    """Geocodifica endereço ou município brasileiro via base interna e OpenStreetMap Nominatim."""
+    q_norm = _remover_acentos(query)
+    
+    # 1. Busca rápida na base de cidades conhecidas (ex.: 'recife', 'recife, pe', 'recife - pe')
+    q_limpa = q_norm.split(',')[0].split('-')[0].strip()
+    if q_limpa in CIDADES_BRASIL:
+        lat, lon, addr, _ = CIDADES_BRASIL[q_limpa]
+        return float(lat), float(lon), addr
+    if q_norm in CIDADES_BRASIL:
+        lat, lon, addr, _ = CIDADES_BRASIL[q_norm]
+        return float(lat), float(lon), addr
+
+    # 2. Busca via Nominatim do OpenStreetMap
     try:
-        geo = Nominatim(user_agent="idf_curves_brazil_geocoder")
+        geo = Nominatim(user_agent="idf_curves_brasil_app_v2", timeout=12)
         q = query.strip()
-        loc = geo.geocode(q, country_codes="br", timeout=10)
+        loc = geo.geocode(q, country_codes="br")
+        if not loc and "brasil" not in q.lower() and "brazil" not in q.lower():
+            loc = geo.geocode(f"{q}, Brasil")
         if not loc:
-            loc = geo.geocode(q, timeout=10)
+            loc = geo.geocode(q)
         if loc:
             return float(loc.latitude), float(loc.longitude), str(loc.address)
     except Exception:
@@ -466,10 +539,6 @@ elif method == L['m_api']:
     if cod_manual.strip():
         estacao = cod_manual.strip()
 
-    col_a, col_b = st.sidebar.columns(2)
-    api_y0 = col_a.number_input(L['y0'], min_value=1900, max_value=2100, value=1990, step=1)
-    api_y1 = col_b.number_input(L['y1'], min_value=1900, max_value=2100, value=2024, step=1)
-
     if st.sidebar.button(L['api_baixar'], type='primary', use_container_width=True):
         if not estacao:
             st.sidebar.warning(L['select_est_first'])
@@ -485,19 +554,29 @@ elif method == L['m_api']:
                 with st.spinner(L['fetching']):
                     if usar_historica:
                         df_baixado = buscar_dataframe_historico(estacao)
-                        valores = df_baixado['Precipitacao'].astype(str).tolist()
-                        anos_disp = sorted(df_baixado['Ano'].dropna().unique().astype(int))
-                        msg_anos = f"{len(valores)} anos ({anos_disp[0]} a {anos_disp[-1]})" if anos_disp else f"{len(valores)} anos"
                     else:
                         cliente_ana()  # valida credenciais (levanta UserError se faltarem)
                         user_id, _ = ler_credenciais_ana()
-                        valores = buscar_serie_ana(
-                            user_id, estacao, int(api_y0), int(api_y1), _progresso=_prog)
-                        msg_anos = f"{len(valores)} anos"
-                st.session_state.ana_series_text = '\n'.join(valores)
+                        df_baixado = buscar_dataframe_ana(
+                            user_id, estacao, 1970, 2025)
+
                 aviso.empty()
                 barra.empty()
-                st.sidebar.success(f"Série baixada: {msg_anos}.")
+
+                if df_baixado is None or df_baixado.empty:
+                    st.sidebar.warning(f"A estação {estacao} não possui registros de chuva na base da ANA.")
+                else:
+                    valores = df_baixado['Precipitacao'].astype(str).tolist()
+                    anos_disp = sorted(df_baixado['Ano'].dropna().unique().astype(int))
+                    ano_ini, ano_fim = anos_disp[0], anos_disp[-1]
+                    n_anos = len(anos_disp)
+                    msg_anos = f"{n_anos} anos ({ano_ini} a {ano_fim})"
+                    st.session_state.ana_series_text = '\n'.join(valores)
+                    st.session_state.download_info = {
+                        'tipo': 'single', 'cod': estacao, 'nome': '',
+                        'n_anos': n_anos, 'ano_ini': ano_ini, 'ano_fim': ano_fim,
+                    }
+                    st.sidebar.success(f"Série baixada: {msg_anos}.")
             except UserError as e:
                 st.sidebar.error(str(e))
             except Exception as e:
@@ -581,32 +660,36 @@ if run:
 # ══════════════════════════════════════════════════════════════════════════════
 if method == L['m_api']:
     with st.expander(L['map_title'], expanded=True):
-        # 1. Campo de busca por endereço
-        c_search, c_btn = st.columns([4, 1])
-        endereco_digitado = c_search.text_input(
-            L['search_addr_label'],
-            value='',
-            placeholder=L['search_addr_ph'],
-            label_visibility='collapsed',
-        )
-        if c_btn.button(L['btn_search_addr'], use_container_width=True):
-            if endereco_digitado.strip():
-                with st.spinner("Buscando localização..."):
-                    res_geo = geocodificar_local(endereco_digitado)
-                    if res_geo:
-                        lat_f, lon_f, addr_f = res_geo
-                        st.session_state.proj_lat = round(lat_f, 4)
-                        st.session_state.proj_lon = round(lon_f, 4)
-                        nova_uf, novo_loc = detectar_uf_coordenadas(lat_f, lon_f)
-                        st.session_state.uf_sel = nova_uf
-                        st.session_state.proj_loc = endereco_digitado.strip()
-                        st.success(f"📍 {addr_f} (Estado detectado: **{nova_uf}**)")
-                        st.rerun()
-                    else:
-                        st.warning("Endereço não localizado. Tente digitar o nome da cidade e estado (ex.: Taubaté, SP).")
+        # 1. Campo de busca por endereço com st.form (permite submissão com tecla ENTER)
+        with st.form("form_busca_endereco", clear_on_submit=False):
+            c_search, c_btn = st.columns([4, 1])
+            endereco_digitado = c_search.text_input(
+                L['search_addr_label'],
+                value='',
+                placeholder=L['search_addr_ph'],
+                label_visibility='collapsed',
+            )
+            submitted = c_btn.form_submit_button(L['btn_search_addr'], use_container_width=True)
 
-        # 2. Controles de Coordenadas, Raio e UF do Inventário
-        c_lat, c_lon, c_raio, c_uf = st.columns([2, 2, 3, 2])
+        if submitted and endereco_digitado.strip():
+            with st.spinner("Buscando localização..."):
+                res_geo = geocodificar_local(endereco_digitado)
+                if res_geo:
+                    lat_f, lon_f, addr_f = res_geo
+                    st.session_state.proj_lat = round(lat_f, 4)
+                    st.session_state.proj_lon = round(lon_f, 4)
+                    nova_uf, novo_loc = detectar_uf_coordenadas(lat_f, lon_f)
+                    st.session_state.uf_sel = nova_uf
+                    st.session_state.proj_loc = (
+                        endereco_digitado.strip() + (f" - {nova_uf}" if nova_uf not in endereco_digitado else "")
+                    )
+                    st.success(f"📍 {addr_f} (Estado detectado: **{nova_uf}**)")
+                    st.rerun()
+                else:
+                    st.warning("Endereço não localizado. Tente digitar o nome da cidade e estado (ex.: Recife, PE ou Taubaté, SP).")
+
+        # 2. Controles de Coordenadas, Raio, UF e Botão para Fixar Pin
+        c_lat, c_lon, c_raio, c_uf, c_pin = st.columns([2, 2, 2.5, 2, 1.5])
         lat_val = c_lat.number_input(L['lat'], value=float(st.session_state.proj_lat), format="%.4f", step=0.01)
         lon_val = c_lon.number_input(L['lon'], value=float(st.session_state.proj_lon), format="%.4f", step=0.01)
         if lat_val != st.session_state.proj_lat or lon_val != st.session_state.proj_lon:
@@ -635,6 +718,9 @@ if method == L['m_api']:
             st.session_state.uf_sel = uf_escolhida
             st.rerun()
 
+        if c_pin.button("📍 Fixar Pin", use_container_width=True, help="Centraliza o pin no mapa e atualiza a busca"):
+            st.rerun()
+
         # 3. Carregamento do Inventário da UF selecionada
         with st.spinner(f"Carregando inventário de estações da ANA ({st.session_state.uf_sel})..."):
             try:
@@ -661,7 +747,7 @@ if method == L['m_api']:
             f"(Inventário da ANA: **{st.session_state.uf_sel}**)"
         )
 
-        # 5. Renderização do Mapa com Folium (Múltiplas Camadas, Zoom, Fullscreen e Escala)
+        # 5. Renderização do Mapa com Folium (Ferramenta de Pin, Camadas compactas, Zoom e Escala)
         m = folium.Map(
             location=[st.session_state.proj_lat, st.session_state.proj_lon],
             zoom_start=10,
@@ -670,29 +756,62 @@ if method == L['m_api']:
         )
 
         # Camadas base selecionáveis pelo usuário
-        folium.TileLayer('OpenStreetMap', name='🗺️ OpenStreetMap (Padrão)').add_to(m)
-        folium.TileLayer('CartoDB positron', name='⚪ CartoDB Positron (Claro)').add_to(m)
-        folium.TileLayer('CartoDB dark_matter', name='⚫ CartoDB Dark (Escuro)').add_to(m)
+        folium.TileLayer('OpenStreetMap', name='🗺️ Padrão (OSM)').add_to(m)
+        folium.TileLayer('CartoDB positron', name='⚪ Claro (Positron)').add_to(m)
+        folium.TileLayer('CartoDB dark_matter', name='⚫ Escuro (Dark)').add_to(m)
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
             attr='Esri World Imagery',
-            name='🛰️ Satélite (Esri World Imagery)',
+            name='🛰️ Satélite (Esri)',
         ).add_to(m)
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
             attr='Esri World Topo',
-            name='⛰️ Topográfico (Esri Topo)',
+            name='⛰️ Relevo (Topo)',
         ).add_to(m)
 
-        # Ferramentas: Tela Cheia e Controle de Camadas
+        # Ferramentas: Tela Cheia e Controle de Desenho com Botão de Pin
         Fullscreen(position='topleft').add_to(m)
+        Draw(
+            export=False,
+            position='topleft',
+            draw_options={
+                'polyline': False,
+                'polygon': False,
+                'circle': False,
+                'rectangle': False,
+                'circlemarker': False,
+                'marker': True,
+            },
+            edit_options={'edit': False, 'remove': False},
+        ).add_to(m)
+
+        # Controle de Camadas com escala 50% menor aplicada via CSS
         folium.LayerControl(position='topright', collapsed=False).add_to(m)
+        css_layers_compact = """
+        <style>
+        .leaflet-control-layers {
+            transform: scale(0.52) !important;
+            transform-origin: top right !important;
+            font-size: 10px !important;
+            padding: 3px 6px !important;
+            border-radius: 4px !important;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3) !important;
+        }
+        .leaflet-control-layers label {
+            font-size: 10px !important;
+            margin-bottom: 2px !important;
+            cursor: pointer;
+        }
+        </style>
+        """
+        m.get_root().html.add_child(folium.Element(css_layers_compact))
 
         # Marcador Vermelho: Local do Projeto
         folium.Marker(
             [st.session_state.proj_lat, st.session_state.proj_lon],
             popup=f"<b>📍 Local do Projeto</b><br>Lat: {st.session_state.proj_lat:.4f}<br>Lon: {st.session_state.proj_lon:.4f}<br>{st.session_state.proj_loc}",
-            tooltip="📍 Local do Projeto (Clique em outro ponto para reposicionar)",
+            tooltip="📍 Local do Projeto (Clique no botão de marcador ou em qualquer ponto do mapa para reposicionar)",
             icon=folium.Icon(color='red', icon='info-sign'),
         ).add_to(m)
 
@@ -748,23 +867,32 @@ if method == L['m_api']:
                     icon=folium.Icon(color='green', icon='tint'),
                 ).add_to(m)
 
-        st.caption(L['click_hint'])
-        map_out = st_folium(m, height=450, use_container_width=True, returned_objects=["last_clicked"])
+        st.caption("💡 Dica: Clique no botão 📍 no canto superior esquerdo do mapa ou clique em qualquer ponto para reposicionar o pin do projeto.")
+        map_out = st_folium(m, height=450, use_container_width=True, returned_objects=["last_clicked", "last_active_drawing"])
 
-        # Detecta clique no mapa: atualiza localização e detecta UF automaticamente
-        if map_out and map_out.get("last_clicked"):
-            c_lat = round(map_out["last_clicked"]["lat"], 4)
-            c_lon = round(map_out["last_clicked"]["lng"], 4)
-            if st.session_state.last_clicked_coords != (c_lat, c_lon):
-                st.session_state.last_clicked_coords = (c_lat, c_lon)
-                st.session_state.proj_lat = c_lat
-                st.session_state.proj_lon = c_lon
+        # Detecta clique no mapa ou posicionamento de marcador via Draw
+        novo_ponto = None
+        if map_out and map_out.get("last_active_drawing"):
+            geom = map_out["last_active_drawing"].get("geometry", {})
+            if geom.get("type") == "Point":
+                coords = geom.get("coordinates", [])
+                if len(coords) >= 2:
+                    novo_ponto = (round(coords[1], 4), round(coords[0], 4))
 
-                # Identifica a UF e localização imediatamente
-                nova_uf, novo_loc = detectar_uf_coordenadas(c_lat, c_lon)
-                st.session_state.uf_sel = nova_uf
-                st.session_state.proj_loc = novo_loc
-                st.rerun()
+        if not novo_ponto and map_out and map_out.get("last_clicked"):
+            novo_ponto = (round(map_out["last_clicked"]["lat"], 4), round(map_out["last_clicked"]["lng"], 4))
+
+        if novo_ponto and st.session_state.last_clicked_coords != novo_ponto:
+            st.session_state.last_clicked_coords = novo_ponto
+            c_lat, c_lon = novo_ponto
+            st.session_state.proj_lat = c_lat
+            st.session_state.proj_lon = c_lon
+
+            # Identifica a UF e localização imediatamente
+            nova_uf, novo_loc = detectar_uf_coordenadas(c_lat, c_lon)
+            st.session_state.uf_sel = nova_uf
+            st.session_state.proj_loc = novo_loc
+            st.rerun()
 
         # Banner de feedback dos dados baixados (mostra anos disponíveis e intervalo)
         if st.session_state.get('download_info'):
@@ -798,28 +926,41 @@ if method == L['m_api']:
             )
             st.session_state.selection_mode = 'single' if modo == L['mode_single'] else 'idw'
 
-            # ── Metodologia IDW (Exibida ao selecionar o modo IDW) ─────────────────
+            # ── Metodologia IDW (Fonte ~30% menor) ──────────────────────────────────
             if st.session_state.selection_mode == 'idw':
                 with st.container(border=True):
-                    st.markdown("### 📐 Metodologia de Interpolação Multi-estação (IDW — Inverse Distance Weighting)")
                     st.markdown(
-                        "O método da **Ponderação pelo Inverso da Distância (IDW)** é a formulação clássica recomendada na hidrologia "
-                        "para estimativa de chuvas pontuais a partir de estações vizinhas:"
+                        """
+                        <div style="font-size: 0.72rem; line-height: 1.4; color: #333;">
+                            <div style="font-weight: bold; font-size: 0.85rem; margin-bottom: 6px; color: #1a5276;">
+                                📐 Metodologia de Interpolação Multi-estação (IDW — Inverse Distance Weighting)
+                            </div>
+                            <p style="margin-bottom: 6px;">
+                                O método da <b>Ponderação pelo Inverso da Distância (IDW)</b> estima chuvas pontuais a partir das estações vizinhas adotando o inverso do quadrado da distância:
+                            </p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-                    st.latex(r"w_i = \frac{1 / d_i^p}{\sum_{k=1}^m \frac{1}{d_k^p}}")
+                    st.latex(r"w_i = \frac{1 / d_i^2}{\sum_{k=1}^m \frac{1}{d_k^2}}")
                     st.markdown(
                         r"""
-                        **Onde:**
-                        - \(d_i\): distância geodésica da estação \(i\) até o local do projeto (em km).
-                        - \(p\): expoente de potência da distância (adotado \(p = 2\), inverso do quadrado da distância).
-                        - \(w_i\): peso relativo de ponderação da estação \(i\) (\(\sum_{i=1}^m w_i = 100\%\)).
-
-                        **Procedimento Hidrológico:**
-                        1. **Ponderação Ano a Ano:** Para cada ano civil coincidente das séries históricas das estações selecionadas, a precipitação máxima diária anual no local do projeto é estimada pela média ponderada das estações ativas naquele ano:
-                           $$P_{\text{proj}}(t) = \sum_{i=1}^m w_i^*(t) \cdot P_i(t)$$
-                        2. **Re-normalização Automática:** Caso uma estação não possua dados em determinado ano, os pesos \(w_i^*(t)\) são re-normalizados automaticamente para as estações remanescentes naquele ano civil.
-                        3. **Série Sintética de Projeto:** A série sintética resultante representa a precipitação de projeto na coordenada exata da obra e alimenta diretamente o ajuste estatístico de Gumbel, a desagregação de Taborga e a equação de Sherman.
-                        """
+                        <div style="font-size: 0.72rem; line-height: 1.4; color: #333;">
+                            <b>Onde:</b>
+                            <ul style="margin-top: 2px; margin-bottom: 6px; padding-left: 18px;">
+                                <li><b>d<sub>i</sub>:</b> distância geodésica da estação <i>i</i> até o ponto do projeto (km).</li>
+                                <li><b>p:</b> expoente da distância adotado (<i>p = 2</i>, inverso do quadrado).</li>
+                                <li><b>w<sub>i</sub>:</b> peso relativo ponderado da estação (\(\sum w_i = 100\%\)).</li>
+                            </ul>
+                            <b>Procedimento Hidrológico:</b>
+                            <ol style="margin-top: 2px; margin-bottom: 4px; padding-left: 18px;">
+                                <li><b>Ponderação Ano a Ano:</b> Para cada ano civil das séries históricas, a precipitação máxima anual no ponto do projeto é estimada pela soma ponderada: \(P_{\text{proj}}(t) = \sum w_i^*(t) \cdot P_i(t)\).</li>
+                                <li><b>Re-normalização Dinâmica:</b> Se uma estação não operou em determinado ano civil, os pesos \(w_i^*(t)\) são re-normalizados automaticamente entre as estações ativas remanescentes.</li>
+                                <li><b>Série Sintética Local:</b> A série ponderada resultante reflete as precipitações na coordenada exata da obra e alimenta o ajuste de Gumbel, Taborga e a equação de Sherman.</li>
+                            </ol>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
 
             if st.session_state.selection_mode == 'single':
@@ -833,17 +974,16 @@ if method == L['m_api']:
 
                 if st.button(L['btn_download_single'], type='primary', use_container_width=True):
                     try:
-                        with st.spinner("Baixando série histórica completa da ANA (sem restrição de datas)..."):
+                        with st.spinner("Baixando série completa da ANA (sem restrição de datas)..."):
                             if usar_historica:
-                                # Baixa toda a série disponível sem filtro de datas
                                 df_baixado = buscar_dataframe_historico(cod_sel)
                             else:
                                 cliente_ana()
                                 user_id, _ = ler_credenciais_ana()
-                                df_baixado = buscar_dataframe_ana(user_id, cod_sel, int(api_y0), int(api_y1))
+                                df_baixado = buscar_dataframe_ana(user_id, cod_sel, 1970, 2025)
 
                         if df_baixado is None or df_baixado.empty:
-                            st.warning("Nenhum dado encontrado para esta estação na ANA.")
+                            st.warning(f"A estação {cod_sel} não possui registros de chuva na base da ANA. Selecione outra estação no raio.")
                         else:
                             anos_disp = sorted(df_baixado['Ano'].dropna().unique().astype(int))
                             ano_ini = anos_disp[0]
@@ -904,6 +1044,7 @@ if method == L['m_api']:
                     if st.button(L['btn_download_idw'], type='primary', use_container_width=True):
                         try:
                             series_dict = {}
+                            estacoes_sem_dados = []
                             barra_dl = st.progress(0.0)
                             aviso_dl = st.empty()
                             total_sel = len(estacoes_sel)
@@ -911,25 +1052,33 @@ if method == L['m_api']:
                             for idx_est, est_item in enumerate(estacoes_sel):
                                 c_code = est_item['codigo']
                                 aviso_dl.caption(f"Baixando série completa da estação {c_code} — {est_item['nome']} ({idx_est + 1}/{total_sel})...")
-                                if usar_historica:
-                                    # Baixa toda a série disponível sem filtro de datas
-                                    df_est = buscar_dataframe_historico(c_code)
-                                else:
-                                    cliente_ana()
-                                    user_id, _ = ler_credenciais_ana()
-                                    df_est = buscar_dataframe_ana(user_id, c_code, int(api_y0), int(api_y1))
+                                try:
+                                    if usar_historica:
+                                        df_est = buscar_dataframe_historico(c_code)
+                                    else:
+                                        cliente_ana()
+                                        user_id, _ = ler_credenciais_ana()
+                                        df_est = buscar_dataframe_ana(user_id, c_code, 1970, 2025)
+                                except Exception:
+                                    df_est = None
 
                                 if df_est is not None and not df_est.empty:
                                     series_dict[c_code] = df_est
+                                else:
+                                    estacoes_sem_dados.append(f"{c_code} ({est_item['nome']})")
+
                                 barra_dl.progress((idx_est + 1) / total_sel)
 
                             aviso_dl.empty()
                             barra_dl.empty()
 
+                            if estacoes_sem_dados:
+                                st.info(f"Nota: A(s) estação(ões) {', '.join(estacoes_sem_dados)} não possui(em) registros de chuva na base da ANA e foi(ram) desconsiderada(s).")
+
                             if not series_dict:
-                                st.warning("Nenhum dado foi retornado para as estações selecionadas.")
+                                st.warning("Nenhuma das estações selecionadas possui registros de chuva na base da ANA. Selecione outras estações no raio.")
                             else:
-                                # Interpola via IDW
+                                # Interpola via IDW normalmente com as estações válidas
                                 df_interp, pesos_finais = interpolar_series_idw(series_dict, dists_map, p=2.0)
                                 anos_disp = sorted(df_interp['Ano'].dropna().unique().astype(int))
                                 ano_ini = anos_disp[0]
