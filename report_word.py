@@ -240,6 +240,8 @@ def generate_word_report(
     fig_pdf,
     fig_idf,
     lang: str = 'PT',
+    coords: tuple[float, float] | None = None,
+    idw_meta: dict | None = None,
 ) -> bytes:
     """
     Generate a complete Word (.docx) Memorial de Calculo / Calculation Report.
@@ -314,13 +316,17 @@ def generate_word_report(
     meta_rows = [
         (t('report_responsavel', lang), responsavel or '-'),
         (t('report_localizacao', lang),  localizacao or '-'),
+    ]
+    if coords and len(coords) == 2 and coords[0] != 0.0:
+        meta_rows.append(('Coordenadas', f'Lat: {coords[0]:.4f}°, Lon: {coords[1]:.4f}°'))
+    meta_rows.extend([
         (t('report_estacao', lang),      estacao or '-'),
         (t('report_period', lang),       period_str),
         (t('report_isozona', lang),      isozona),
         (t('report_n', lang),            f'N = {n} {t("report_n_suffix", lang)}'),
         (t('report_date', lang),         now.strftime('%d/%m/%Y %H:%M')),
         ('ID', report_id),
-    ]
+    ])
     mt = doc.add_table(rows=len(meta_rows), cols=2)
     mt.alignment = WD_TABLE_ALIGNMENT.CENTER
     mt.style = 'Table Grid'
@@ -344,6 +350,47 @@ def generate_word_report(
                           if is_pt else 'Step 1 - Historical Precipitation Series'))
     _para(doc, f'Estacao: {estacao or "-"}  |  Periodo: {period_str}  |  N = {n}')
     _para(doc, f'mu = {mu:.3f} mm  |  sigma = {sigma:.3f} mm', bold=True, color=_BLUE_DARK)
+
+    # Tabela IDW no Word
+    if idw_meta and idw_meta.get('stations'):
+        doc.add_paragraph()
+        p_idw = doc.add_paragraph()
+        p_idw.add_run(
+            'Interpolação Espacial IDW (Inverse Distance Weighting)' if is_pt
+            else 'Spatial Interpolation IDW (Inverse Distance Weighting)'
+        ).bold = True
+        p_idw.runs[0].font.size = Pt(11)
+        p_idw.runs[0].font.color.rgb = _BLUE_DARK
+
+        idw_tbl = doc.add_table(rows=len(idw_meta['stations']) + 1, cols=4)
+        idw_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        idw_tbl.style = 'Table Grid'
+        hdr_texts = ['Código', 'Estação', 'Distância (km)', 'Peso (%)'] if is_pt else ['Code', 'Station', 'Distance (km)', 'Weight (%)']
+        for ci, h in enumerate(hdr_texts):
+            c = idw_tbl.rows[0].cells[ci]
+            c.text = h
+            c.paragraphs[0].runs[0].bold = True
+            c.paragraphs[0].runs[0].font.size = Pt(9)
+            c.paragraphs[0].runs[0].font.color.rgb = _WHITE
+            c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _set_cell_bg(c, '1a5276')
+
+        for ri, s_info in enumerate(idw_meta['stations']):
+            row = idw_tbl.rows[ri + 1]
+            bg = 'eaf4fb' if ri % 2 == 0 else 'ffffff'
+            vals = [
+                str(s_info.get('codigo', '—')),
+                str(s_info.get('nome', '—')),
+                f"{s_info.get('distancia_km', 0.0):.2f}",
+                f"{s_info.get('peso_pct', 0.0):.1f}%",
+            ]
+            for ci, val in enumerate(vals):
+                cell = row.cells[ci]
+                cell.text = val
+                cell.paragraphs[0].runs[0].font.size = Pt(9)
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _set_cell_bg(cell, bg)
+
     doc.add_paragraph()
     _add_df_table(doc, series_df)
     _add_figure(doc, png_hist, 'Figura 1 - Serie Historica de Precipitacao Maxima Diaria Anual')

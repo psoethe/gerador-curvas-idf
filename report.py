@@ -325,6 +325,8 @@ def generate_pdf_report(
     fig_pdf,
     fig_idf,
     lang: str = 'PT',
+    coords: tuple[float, float] | None = None,
+    idw_meta: dict | None = None,
 ) -> bytes:
     """
     Generate a complete PDF Memorial de Cálculo / Calculation Report.
@@ -418,6 +420,10 @@ def generate_pdf_report(
     meta_rows = [
         (t('report_responsavel', lang),   responsavel or '—'),
         (t('report_localizacao', lang),   localizacao or '—'),
+    ]
+    if coords and len(coords) == 2 and coords[0] != 0.0:
+        meta_rows.append(('Coordenadas / Coordinates', f'Lat: {coords[0]:.4f}°, Lon: {coords[1]:.4f}°'))
+    meta_rows.extend([
         (t('report_estacao', lang),       estacao or '—'),
         (t('report_isozona', lang),       isozona),
         (t('report_period_filter', lang), period_str),
@@ -428,7 +434,7 @@ def generate_pdf_report(
         ('Sn',                            f'{gumbel_mem["stats"]["sn"]:.4f}'),
         ('ID Relatório / Report ID',      report_id),
         ('Data / Date',                   now.strftime('%d/%m/%Y %H:%M')),
-    ]
+    ])
     story.append(_kv_table(meta_rows, st))
     story.append(PageBreak())
 
@@ -479,6 +485,35 @@ def generate_pdf_report(
         ('Máx / Max', f'{series_df[t("col_precip", lang)].max():.1f} mm'),
     ], st, key_w=6 * cm))
     story.append(Spacer(1, 0.3 * cm))
+
+    # Tabela de Interpolação IDW se houver múltiplas estações
+    if idw_meta and idw_meta.get('stations'):
+        story.append(Paragraph(
+            '<b>' + ('Interpolação Espacial IDW (Ponderação pelo Inverso da Distância)' if is_pt
+            else 'Spatial IDW Interpolation (Inverse Distance Weighting)') + '</b>',
+            st['H3']
+        ))
+        idw_hdr = ['Código', 'Estação', 'Distância (km)', 'Peso Ponderado (%)'] if is_pt else ['Code', 'Station', 'Distance (km)', 'Weight (%)']
+        idw_rows = [[Paragraph(f'<b>{h}</b>', st['Normal']) for h in idw_hdr]]
+        for s_info in idw_meta['stations']:
+            idw_rows.append([
+                Paragraph(str(s_info.get('codigo', '—')), st['Normal']),
+                Paragraph(str(s_info.get('nome', '—')), st['Normal']),
+                Paragraph(f"{s_info.get('distancia_km', 0.0):.2f}", st['Normal']),
+                Paragraph(f"{s_info.get('peso_pct', 0.0):.1f}%", st['Normal']),
+            ])
+        idw_tbl = Table(idw_rows, colWidths=[2.5 * cm, 7.5 * cm, 3.5 * cm, 3.5 * cm])
+        idw_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), BLUE_MID),
+            ('TEXTCOLOR', (0, 0), (-1, 0), WHITE),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#cbd5e1')),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [WHITE, BLUE_LIGHT]),
+        ]))
+        story.append(idw_tbl)
+        story.append(Spacer(1, 0.3 * cm))
 
     story.extend(_png_flowable(png_hist))
     story.append(Paragraph(

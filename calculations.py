@@ -263,7 +263,18 @@ class AnaHidroWebService:
                 tipo = str(d.get("Tipo_Estacao") or "")
                 if apenas_pluviometricas and not tipo.lower().startswith("pluvi"):
                     continue
-                lista.append({"codigo": str(cod).strip(), "nome": str(d.get("Estacao_Nome") or "Desconhecida")})
+                lat = _num_ptbr(d.get("Estacao_Latitude"))
+                lon = _num_ptbr(d.get("Estacao_Longitude"))
+                alt = _num_ptbr(d.get("Estacao_Altitude"))
+                lista.append({
+                    "codigo": str(cod).strip(),
+                    "nome": str(d.get("Estacao_Nome") or "Desconhecida").strip(),
+                    "latitude": lat if np.isfinite(lat) else None,
+                    "longitude": lon if np.isfinite(lon) else None,
+                    "altitude": alt if np.isfinite(alt) else None,
+                    "municipio": str(d.get("Estacao_Municipio_Nome") or "").strip(),
+                    "rio": str(d.get("Estacao_Rio_Nome") or "").strip(),
+                })
 
             logger.info(f"✅ Encontradas {len(lista)} estações para a UF {uf}")
             return sorted(lista, key=lambda x: x["nome"])
@@ -567,10 +578,137 @@ def listar_estacoes_historicas(uf: str, timeout: int = 120) -> list:
         cod = (campos.get("Codigo") or "").strip()
         if not cod:
             continue
-        lista.append({"codigo": cod, "nome": (campos.get("Nome") or "Desconhecida").strip()})
+        lat = _num_ptbr(campos.get("Latitude"))
+        lon = _num_ptbr(campos.get("Longitude"))
+        alt = _num_ptbr(campos.get("Altitude"))
+        lista.append({
+            "codigo": cod,
+            "nome": (campos.get("Nome") or "Desconhecida").strip(),
+            "latitude": lat if np.isfinite(lat) else None,
+            "longitude": lon if np.isfinite(lon) else None,
+            "altitude": alt if np.isfinite(alt) else None,
+            "municipio": (campos.get("nmMunicipio") or "").strip(),
+            "rio": (campos.get("nmRio") or "").strip(),
+            "operando": (campos.get("Operando") or "").strip(),
+        })
 
     logger.info(f"✅ Inventário legado: {len(lista)} estações pluviométricas em {uf}")
     return sorted(lista, key=lambda x: x["nome"])
+
+
+# ── Funções Geoespaciais e Interpolação IDW ───────────────────────────────────
+
+def calcular_distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calcula a distância geodésica em km entre dois pares de coordenadas (Haversine)."""
+    R = 6371.0  # Raio médio da Terra em km
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlambda = np.radians(lon2 - lon1)
+    a = np.sin(dphi / 2.0)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2.0)**2
+    return float(R * 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a)))
+
+
+def filtrar_estacoes_por_raio(
+    lat_ref: float,
+    lon_ref: float,
+    estacoes: list[dict],
+    raio_km: float = 50.0,
+) -> list[dict]:
+    """
+    Calcula a distância de cada estação ao ponto (lat_ref, lon_ref) e retorna
+    aquelas situadas até raio_km, ordenadas da mais próxima à mais distante.
+    Adiciona o campo 'distancia_km' em cada estação retornada.
+    """
+    resultado = []
+    for e in estacoes:
+        lat = e.get("latitude")
+        lon = e.get("longitude")
+        if lat is None or lon is None or not (np.isfinite(lat) and np.isfinite(lon)):
+            continue
+        # Filtro de sanidade geográfica no território brasileiro e fronteiras
+        if not (-35.0 <= lat <= 6.0 and -75.0 <= lon <= -30.0):
+            continue
+        dist = calcular_distancia_km(lat_ref, lon_ref, lat, lon)
+        if dist <= raio_km:
+            item = dict(e)
+            item["distancia_km"] = round(dist, 2)
+            resultado.append(item)
+
+    return sorted(resultado, key=lambda x: x["distancia_km"])
+
+
+def interpolar_series_idw(
+    series_dict: dict[str, pd.DataFrame],
+    distancias_km: dict[str, float],
+    p: float = 2.0,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """
+    Interpola séries históricas de precipitação máxima diária anual de múltiplas estações
+    utilizando Inverse Distance Weighting (IDW):
+      w_i = (1 / d_i^p) / sum(1 / d_k^p)
+
+    Parâmetros:
+    - series_dict: dict mapeando {cod_estacao: DataFrame com ['Ano', 'Precipitacao']}
+    - distancias_km: dict {cod_estacao: distancia_km}
+    - p: expoente de distância (padrão 2.0)
+
+    Retorna:
+    - df_ponderado: DataFrame ['Ano', 'Precipitacao'] com a série sintética ponderada no ponto.
+    - pesos_globais: dict {cod_estacao: peso_percentual_global}
+    """
+    if not series_dict:
+        raise UserError("Nenhuma série de chuva disponível para interpolação.")
+
+    estacoes = [cod for cod, df in series_dict.items() if df is not None and not df.empty]
+    if not estacoes:
+        raise UserError("As estações selecionadas não retornaram dados de chuva para interpolação.")
+
+    # Se apenas 1 estação válida
+    if len(estacoes) == 1:
+        cod = estacoes[0]
+        return series_dict[cod].copy(), {cod: 1.0}
+
+    # Se alguma estação estiver no ponto exato (distância < 100m), usa 100% dela
+    for cod in estacoes:
+        if distancias_km.get(cod, 10.0) < 0.1:
+            return series_dict[cod].copy(), {cod: 1.0}
+
+    # Pesos globais nominais
+    inv_dists = {cod: (1.0 / max(distancias_km.get(cod, 1.0), 0.1)) ** p for cod in estacoes}
+    soma_inv = sum(inv_dists.values())
+    pesos_globais = {cod: round(inv_dists[cod] / soma_inv, 4) for cod in estacoes}
+
+    # Interpola ano a ano considerando as estações que possuem dado em cada ano
+    anos_por_estacao = {
+        cod: set(series_dict[cod]["Ano"].dropna().astype(int))
+        for cod in estacoes
+    }
+    todos_anos = sorted(set.union(*anos_por_estacao.values()))
+
+    linhas = []
+    for ano in todos_anos:
+        estacoes_no_ano = [cod for cod in estacoes if ano in anos_por_estacao[cod]]
+        if not estacoes_no_ano:
+            continue
+
+        # Re-normaliza pesos para o subconjunto de estações disponíveis no ano
+        inv_sub = {cod: inv_dists[cod] for cod in estacoes_no_ano}
+        soma_sub = sum(inv_sub.values())
+
+        p_ponderada = 0.0
+        for cod in estacoes_no_ano:
+            w = inv_sub[cod] / soma_sub
+            df_cod = series_dict[cod]
+            val = float(df_cod.loc[df_cod["Ano"] == ano, "Precipitacao"].values[0])
+            p_ponderada += w * val
+
+        linhas.append({"Ano": int(ano), "Precipitacao": round(p_ponderada, 2)})
+
+    df_ponderado = pd.DataFrame(linhas).sort_values("Ano").reset_index(drop=True)
+    if df_ponderado.empty:
+        raise UserError("Não foi possível gerar a série interpolada (sem registros coincidentes).")
+
+    return df_ponderado, pesos_globais
 
 
 # ── Core Calculations ─────────────────────────────────────────────────────────

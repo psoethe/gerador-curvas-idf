@@ -379,6 +379,20 @@ LABELS: dict[str, dict[str, str]] = {
                              'EN': 'Small sample: N={}. Results may be unreliable.'},
     'err_no_period_data':   {'PT': 'Nenhum dado encontrado no período selecionado ({} – {}). Verifique os anos informados.',
                              'EN': 'No data found in the selected period ({} – {}). Please check the years entered.'},
+
+    # ── Geoespacial & Interpolação IDW ────────────────────────────────────────
+    'geo_section_title':    {'PT': 'Localização do Projeto & Estações ANA',
+                             'EN': 'Project Location & ANA Stations'},
+    'geo_coords_proj':      {'PT': 'Coordenadas do Projeto',
+                             'EN': 'Project Coordinates'},
+    'geo_interp_title':     {'PT': 'Interpolação Espacial (IDW)',
+                             'EN': 'Spatial Interpolation (IDW)'},
+    'geo_tbl_stations':     {'PT': 'Estações Utilizadas na Interpolação',
+                             'EN': 'Stations Used in Interpolation'},
+    'geo_station_code':     {'PT': 'Código',                             'EN': 'Code'},
+    'geo_station_name':     {'PT': 'Nome da Estação',                    'EN': 'Station Name'},
+    'geo_distance_km':      {'PT': 'Distância (km)',                     'EN': 'Distance (km)'},
+    'geo_weight_pct':       {'PT': 'Peso Ponderado (%)',                 'EN': 'Weighted Weight (%)'},
 }
 
 
