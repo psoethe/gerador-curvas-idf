@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 import folium
+from folium.plugins import Fullscreen
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 import pandas as pd
@@ -107,12 +108,10 @@ def buscar_serie_ana(user_id: str, estacao: str, y0: int, y1: int, _progresso=No
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def buscar_serie_historica(estacao: str, y0: int, y1: int) -> list[str]:
+def buscar_serie_historica(estacao: str, y0: int = None, y1: int = None) -> list[str]:
     """
     Busca a série anual pelo webservice histórico da ANA (estações convencionais).
-
-    Não requer credenciais e traz todo o período numa única requisição. Cacheada
-    por (estação, período) durante 1 h, então reconsultas são instantâneas.
+    Se y0 e y1 forem omitidos, baixa todo o período histórico disponível da estação.
     """
     df = obter_serie_chuva_historica(estacao, y0, y1)
     return df['Precipitacao'].astype(str).tolist()
@@ -127,8 +126,11 @@ def buscar_dataframe_ana(user_id: str, estacao: str, y0: int, y1: int) -> pd.Dat
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def buscar_dataframe_historico(estacao: str, y0: int, y1: int) -> pd.DataFrame:
-    """Retorna o DataFrame anual de máximas do webservice histórico."""
+def buscar_dataframe_historico(estacao: str, y0: int = None, y1: int = None) -> pd.DataFrame:
+    """
+    Retorna o DataFrame anual de máximas do webservice histórico.
+    Se y0 e y1 forem omitidos, baixa toda a série histórica completa disponível.
+    """
     return obter_serie_chuva_historica(estacao, y0, y1)
 
 
@@ -171,6 +173,41 @@ def reverse_geocodificar(lat: float, lon: float):
     except Exception:
         pass
     return None, None, None
+
+
+# Centróides das 27 UFs para fallback geográfico instantâneo e offline
+CENTROIDES_UF = {
+    'AC': (-9.97, -67.81), 'AL': (-9.66, -35.73), 'AP': (0.03, -51.06), 'AM': (-3.11, -60.02),
+    'BA': (-12.97, -38.51), 'CE': (-3.73, -38.52), 'DF': (-15.79, -47.88), 'ES': (-20.31, -40.33),
+    'GO': (-16.68, -49.25), 'MA': (-2.53, -44.30), 'MT': (-15.60, -56.09), 'MS': (-20.46, -54.62),
+    'MG': (-19.92, -43.93), 'PA': (-1.45, -48.50), 'PB': (-7.11, -34.86), 'PR': (-25.42, -49.27),
+    'PE': (-8.05, -34.88), 'PI': (-5.08, -42.80), 'RJ': (-22.90, -43.17), 'RN': (-5.79, -35.20),
+    'RS': (-30.03, -51.22), 'RO': (-8.76, -63.90), 'RR': (2.82, -60.67), 'SC': (-27.59, -48.54),
+    'SP': (-23.55, -46.63), 'SE': (-10.94, -37.07), 'TO': (-10.18, -48.33),
+}
+
+
+def detectar_uf_offline(lat: float, lon: float) -> str:
+    """Identifica a UF brasileira mais próxima das coordenadas por proximidade geográfica."""
+    melhor_uf = 'SP'
+    menor_d = float('inf')
+    for uf, (c_lat, c_lon) in CENTROIDES_UF.items():
+        d = (lat - c_lat) ** 2 + (lon - c_lon) ** 2
+        if d < menor_d:
+            menor_d = d
+            melhor_uf = uf
+    return melhor_uf
+
+
+def detectar_uf_coordenadas(lat: float, lon: float) -> tuple[str, str]:
+    """Detecta a UF e o nome do local via geocodificação reversa com fallback offline."""
+    uf_det, c_det, s_det = reverse_geocodificar(lat, lon)
+    if uf_det and uf_det in AnaHidroWebService.UFS_BRASIL:
+        loc_str = f"{c_det} - {uf_det}" if c_det else f"Ponto em {uf_det}"
+        return uf_det, loc_str
+    # Fallback geográfico
+    uf_fb = detectar_uf_offline(lat, lon)
+    return uf_fb, f"Ponto em {uf_fb}"
 
 
 # ── Textos da interface (PT / EN) ─────────────────────────────────────────────
@@ -347,6 +384,7 @@ def init_state():
     st.session_state.setdefault('idw_meta', None)
     st.session_state.setdefault('last_clicked_coords', None)
     st.session_state.setdefault('uf_sel', 'SP')
+    st.session_state.setdefault('download_info', None)
 
 
 init_state()
@@ -446,16 +484,20 @@ elif method == L['m_api']:
             try:
                 with st.spinner(L['fetching']):
                     if usar_historica:
-                        valores = buscar_serie_historica(estacao, int(api_y0), int(api_y1))
+                        df_baixado = buscar_dataframe_historico(estacao)
+                        valores = df_baixado['Precipitacao'].astype(str).tolist()
+                        anos_disp = sorted(df_baixado['Ano'].dropna().unique().astype(int))
+                        msg_anos = f"{len(valores)} anos ({anos_disp[0]} a {anos_disp[-1]})" if anos_disp else f"{len(valores)} anos"
                     else:
                         cliente_ana()  # valida credenciais (levanta UserError se faltarem)
                         user_id, _ = ler_credenciais_ana()
                         valores = buscar_serie_ana(
                             user_id, estacao, int(api_y0), int(api_y1), _progresso=_prog)
+                        msg_anos = f"{len(valores)} anos"
                 st.session_state.ana_series_text = '\n'.join(valores)
                 aviso.empty()
                 barra.empty()
-                st.sidebar.success(L['fetch_ok'].format(n=len(valores)))
+                st.sidebar.success(f"Série baixada: {msg_anos}.")
             except UserError as e:
                 st.sidebar.error(str(e))
             except Exception as e:
@@ -555,11 +597,10 @@ if method == L['m_api']:
                         lat_f, lon_f, addr_f = res_geo
                         st.session_state.proj_lat = round(lat_f, 4)
                         st.session_state.proj_lon = round(lon_f, 4)
-                        uf_det, c_det, s_det = reverse_geocodificar(lat_f, lon_f)
-                        if uf_det and uf_det in AnaHidroWebService.UFS_BRASIL:
-                            st.session_state.uf_sel = uf_det
-                        st.session_state.proj_loc = c_det + (f" - {uf_det}" if uf_det else "") or endereco_digitado
-                        st.success(f"📍 {addr_f}")
+                        nova_uf, novo_loc = detectar_uf_coordenadas(lat_f, lon_f)
+                        st.session_state.uf_sel = nova_uf
+                        st.session_state.proj_loc = endereco_digitado.strip()
+                        st.success(f"📍 {addr_f} (Estado detectado: **{nova_uf}**)")
                         st.rerun()
                     else:
                         st.warning("Endereço não localizado. Tente digitar o nome da cidade e estado (ex.: Taubaté, SP).")
@@ -571,6 +612,9 @@ if method == L['m_api']:
         if lat_val != st.session_state.proj_lat or lon_val != st.session_state.proj_lon:
             st.session_state.proj_lat = lat_val
             st.session_state.proj_lon = lon_val
+            nova_uf, novo_loc = detectar_uf_coordenadas(lat_val, lon_val)
+            st.session_state.uf_sel = nova_uf
+            st.session_state.proj_loc = novo_loc
             st.rerun()
 
         raio_km = c_raio.slider(
@@ -592,17 +636,17 @@ if method == L['m_api']:
             st.rerun()
 
         # 3. Carregamento do Inventário da UF selecionada
-        with st.spinner("Carregando inventário de estações da ANA..."):
+        with st.spinner(f"Carregando inventário de estações da ANA ({st.session_state.uf_sel})..."):
             try:
                 if usar_historica:
-                    estacoes_uf = listar_estacoes_hist(uf_escolhida)
+                    estacoes_uf = listar_estacoes_hist(st.session_state.uf_sel)
                 else:
-                    estacoes_uf = cliente_ana().listar_estacoes_por_uf(uf_escolhida)
+                    estacoes_uf = cliente_ana().listar_estacoes_por_uf(st.session_state.uf_sel)
             except Exception as exc:
                 st.error(f"Falha ao obter inventário da ANA: {exc}")
                 estacoes_uf = []
 
-        # 4. Filtragem das estações no raio especificado
+        # 4. Filtragem das estações no raio especificado (ordenadas por distância crescente)
         estacoes_no_raio = filtrar_estacoes_por_raio(
             st.session_state.proj_lat,
             st.session_state.proj_lon,
@@ -610,18 +654,45 @@ if method == L['m_api']:
             raio_km=st.session_state.search_radius_km,
         )
 
-        # 5. Renderização do Mapa com Folium
+        # Informação visual do ponto de projeto
+        st.markdown(
+            f"📍 **Local do Projeto:** Lat `{st.session_state.proj_lat:.4f}` | "
+            f"Lon `{st.session_state.proj_lon:.4f}` — *{st.session_state.proj_loc}* "
+            f"(Inventário da ANA: **{st.session_state.uf_sel}**)"
+        )
+
+        # 5. Renderização do Mapa com Folium (Múltiplas Camadas, Zoom, Fullscreen e Escala)
         m = folium.Map(
             location=[st.session_state.proj_lat, st.session_state.proj_lon],
             zoom_start=10,
-            tiles='OpenStreetMap',
+            tiles=None,
+            control_scale=True,
         )
+
+        # Camadas base selecionáveis pelo usuário
+        folium.TileLayer('OpenStreetMap', name='🗺️ OpenStreetMap (Padrão)').add_to(m)
+        folium.TileLayer('CartoDB positron', name='⚪ CartoDB Positron (Claro)').add_to(m)
+        folium.TileLayer('CartoDB dark_matter', name='⚫ CartoDB Dark (Escuro)').add_to(m)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri World Imagery',
+            name='🛰️ Satélite (Esri World Imagery)',
+        ).add_to(m)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri World Topo',
+            name='⛰️ Topográfico (Esri Topo)',
+        ).add_to(m)
+
+        # Ferramentas: Tela Cheia e Controle de Camadas
+        Fullscreen(position='topleft').add_to(m)
+        folium.LayerControl(position='topright', collapsed=False).add_to(m)
 
         # Marcador Vermelho: Local do Projeto
         folium.Marker(
             [st.session_state.proj_lat, st.session_state.proj_lon],
-            popup=f"<b>Local do Projeto</b><br>Lat: {st.session_state.proj_lat:.4f}<br>Lon: {st.session_state.proj_lon:.4f}",
-            tooltip="Local do Projeto",
+            popup=f"<b>📍 Local do Projeto</b><br>Lat: {st.session_state.proj_lat:.4f}<br>Lon: {st.session_state.proj_lon:.4f}<br>{st.session_state.proj_loc}",
+            tooltip="📍 Local do Projeto (Clique em outro ponto para reposicionar)",
             icon=folium.Icon(color='red', icon='info-sign'),
         ).add_to(m)
 
@@ -637,31 +708,50 @@ if method == L['m_api']:
             tooltip=f"Raio de busca: {st.session_state.search_radius_km} km",
         ).add_to(m)
 
-        # Marcadores Verdes: Estações Pluviométricas no Raio
-        for est in estacoes_no_raio:
+        # Marcadores das Estações: A mais próxima em AZUL com estrela, as demais em VERDE
+        for idx, est in enumerate(estacoes_no_raio):
+            is_closest = (idx == 0)
             dist_km = est['distancia_km']
             cod = est['codigo']
             nome = est['nome']
             mun = est.get('municipio', '')
-            pop_html = f"""
-            <div style='font-family:sans-serif; min-width:180px;'>
-                <b style='color:#1a5276;'>{cod} — {nome}</b><br>
-                <b>Município:</b> {mun}<br>
-                <b>Distância:</b> {dist_km:.2f} km<br>
-                <b>Coordenadas:</b> {est['latitude']:.4f}, {est['longitude']:.4f}
-            </div>
-            """
-            folium.Marker(
-                [est['latitude'], est['longitude']],
-                popup=folium.Popup(pop_html, max_width=260),
-                tooltip=f"Estação {cod} — {nome} ({dist_km:.1f} km)",
-                icon=folium.Icon(color='green', icon='tint'),
-            ).add_to(m)
+
+            if is_closest:
+                pop_html = f"""
+                <div style='font-family:sans-serif; min-width:190px;'>
+                    <span style='background:#0d6efd; color:white; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold;'>⭐ MAIS PRÓXIMA</span><br>
+                    <b style='color:#0d6efd; font-size:13px;'>{cod} — {nome}</b><br>
+                    <b>Município:</b> {mun}<br>
+                    <b>Distância:</b> <span style='color:#0d6efd; font-weight:bold;'>{dist_km:.2f} km</span><br>
+                    <b>Coordenadas:</b> {est['latitude']:.4f}, {est['longitude']:.4f}
+                </div>
+                """
+                folium.Marker(
+                    [est['latitude'], est['longitude']],
+                    popup=folium.Popup(pop_html, max_width=280),
+                    tooltip=f"⭐ [MAIS PRÓXIMA - {dist_km:.1f} km] {cod} — {nome}",
+                    icon=folium.Icon(color='blue', icon='star'),
+                ).add_to(m)
+            else:
+                pop_html = f"""
+                <div style='font-family:sans-serif; min-width:180px;'>
+                    <b style='color:#1a5276;'>{cod} — {nome}</b><br>
+                    <b>Município:</b> {mun}<br>
+                    <b>Distância:</b> {dist_km:.2f} km<br>
+                    <b>Coordenadas:</b> {est['latitude']:.4f}, {est['longitude']:.4f}
+                </div>
+                """
+                folium.Marker(
+                    [est['latitude'], est['longitude']],
+                    popup=folium.Popup(pop_html, max_width=260),
+                    tooltip=f"Estação {cod} — {nome} ({dist_km:.1f} km)",
+                    icon=folium.Icon(color='green', icon='tint'),
+                ).add_to(m)
 
         st.caption(L['click_hint'])
-        map_out = st_folium(m, height=430, use_container_width=True, returned_objects=["last_clicked"])
+        map_out = st_folium(m, height=450, use_container_width=True, returned_objects=["last_clicked"])
 
-        # Detecta clique no mapa para atualizar localização do projeto
+        # Detecta clique no mapa: atualiza localização e detecta UF automaticamente
         if map_out and map_out.get("last_clicked"):
             c_lat = round(map_out["last_clicked"]["lat"], 4)
             c_lon = round(map_out["last_clicked"]["lng"], 4)
@@ -669,12 +759,30 @@ if method == L['m_api']:
                 st.session_state.last_clicked_coords = (c_lat, c_lon)
                 st.session_state.proj_lat = c_lat
                 st.session_state.proj_lon = c_lon
-                uf_det, c_det, s_det = reverse_geocodificar(c_lat, c_lon)
-                if uf_det and uf_det in AnaHidroWebService.UFS_BRASIL:
-                    st.session_state.uf_sel = uf_det
-                if c_det:
-                    st.session_state.proj_loc = f"{c_det} - {uf_det or s_det}"
+
+                # Identifica a UF e localização imediatamente
+                nova_uf, novo_loc = detectar_uf_coordenadas(c_lat, c_lon)
+                st.session_state.uf_sel = nova_uf
+                st.session_state.proj_loc = novo_loc
                 st.rerun()
+
+        # Banner de feedback dos dados baixados (mostra anos disponíveis e intervalo)
+        if st.session_state.get('download_info'):
+            dinfo = st.session_state.download_info
+            if dinfo.get('tipo') == 'idw':
+                st.success(
+                    f"✅ **Série sintética IDW gerada com sucesso!**\n\n"
+                    f"- **Estações combinadas:** {dinfo['n_est']}\n"
+                    f"- **Período disponível na ANA:** **{dinfo['ano_ini']} a {dinfo['ano_fim']}** ({dinfo['n_anos']} anos com dados)\n"
+                    f"- 💡 *Dica:* Toda a base histórica disponível foi baixada. Caso deseje restringir o período de cálculo (ex.: últimos 30 anos), utilize o **'🗓️ Filtro de Período'** na barra lateral."
+                )
+            else:
+                st.success(
+                    f"✅ **Série histórica completa baixada com sucesso!**\n\n"
+                    f"- **Estação:** `{dinfo['cod']}` — {dinfo.get('nome', '')}\n"
+                    f"- **Período disponível na ANA:** **{dinfo['ano_ini']} a {dinfo['ano_fim']}** ({dinfo['n_anos']} anos com dados)\n"
+                    f"- 💡 *Dica:* Toda a base histórica disponível foi baixada. Caso deseje restringir o período de cálculo (ex.: últimos 30 anos), utilize o **'🗓️ Filtro de Período'** na barra lateral."
+                )
 
         # 6. Seleção de Estações (Mais Próxima vs. Interpolação IDW)
         if not estacoes_no_raio:
@@ -690,26 +798,70 @@ if method == L['m_api']:
             )
             st.session_state.selection_mode = 'single' if modo == L['mode_single'] else 'idw'
 
+            # ── Metodologia IDW (Exibida ao selecionar o modo IDW) ─────────────────
+            if st.session_state.selection_mode == 'idw':
+                with st.container(border=True):
+                    st.markdown("### 📐 Metodologia de Interpolação Multi-estação (IDW — Inverse Distance Weighting)")
+                    st.markdown(
+                        "O método da **Ponderação pelo Inverso da Distância (IDW)** é a formulação clássica recomendada na hidrologia "
+                        "para estimativa de chuvas pontuais a partir de estações vizinhas:"
+                    )
+                    st.latex(r"w_i = \frac{1 / d_i^p}{\sum_{k=1}^m \frac{1}{d_k^p}}")
+                    st.markdown(
+                        r"""
+                        **Onde:**
+                        - \(d_i\): distância geodésica da estação \(i\) até o local do projeto (em km).
+                        - \(p\): expoente de potência da distância (adotado \(p = 2\), inverso do quadrado da distância).
+                        - \(w_i\): peso relativo de ponderação da estação \(i\) (\(\sum_{i=1}^m w_i = 100\%\)).
+
+                        **Procedimento Hidrológico:**
+                        1. **Ponderação Ano a Ano:** Para cada ano civil coincidente das séries históricas das estações selecionadas, a precipitação máxima diária anual no local do projeto é estimada pela média ponderada das estações ativas naquele ano:
+                           $$P_{\text{proj}}(t) = \sum_{i=1}^m w_i^*(t) \cdot P_i(t)$$
+                        2. **Re-normalização Automática:** Caso uma estação não possua dados em determinado ano, os pesos \(w_i^*(t)\) são re-normalizados automaticamente para as estações remanescentes naquele ano civil.
+                        3. **Série Sintética de Projeto:** A série sintética resultante representa a precipitação de projeto na coordenada exata da obra e alimenta diretamente o ajuste estatístico de Gumbel, a desagregação de Taborga e a equação de Sherman.
+                        """
+                    )
+
             if st.session_state.selection_mode == 'single':
-                opcoes_est = [f"{e['codigo']} — {e['nome']} ({e['distancia_km']:.1f} km)" for e in estacoes_no_raio]
+                opcoes_est = [
+                    f"{'⭐ ' if i == 0 else ''}{e['codigo']} — {e['nome']} ({e['distancia_km']:.1f} km)"
+                    for i, e in enumerate(estacoes_no_raio)
+                ]
                 escolha_est = st.selectbox(L['closest_station'], opcoes_est, index=0)
-                cod_sel = escolha_est.split(" — ")[0]
+                cod_sel = escolha_est.replace('⭐ ', '').split(" — ")[0]
                 est_obj = next(e for e in estacoes_no_raio if e['codigo'] == cod_sel)
 
                 if st.button(L['btn_download_single'], type='primary', use_container_width=True):
                     try:
-                        with st.spinner(L['fetching']):
+                        with st.spinner("Baixando série histórica completa da ANA (sem restrição de datas)..."):
                             if usar_historica:
-                                valores = buscar_serie_historica(cod_sel, int(api_y0), int(api_y1))
+                                # Baixa toda a série disponível sem filtro de datas
+                                df_baixado = buscar_dataframe_historico(cod_sel)
                             else:
                                 cliente_ana()
                                 user_id, _ = ler_credenciais_ana()
-                                valores = buscar_serie_ana(user_id, cod_sel, int(api_y0), int(api_y1))
-                        st.session_state.ana_series_text = '\n'.join(valores)
-                        st.session_state.estacao_input = f"{cod_sel} ({est_obj['nome']})"
-                        st.session_state.idw_meta = None
-                        st.success(L['fetch_ok'].format(n=len(valores)))
-                        st.rerun()
+                                df_baixado = buscar_dataframe_ana(user_id, cod_sel, int(api_y0), int(api_y1))
+
+                        if df_baixado is None or df_baixado.empty:
+                            st.warning("Nenhum dado encontrado para esta estação na ANA.")
+                        else:
+                            anos_disp = sorted(df_baixado['Ano'].dropna().unique().astype(int))
+                            ano_ini = anos_disp[0]
+                            ano_fim = anos_disp[-1]
+                            n_anos = len(anos_disp)
+
+                            st.session_state.ana_series_text = '\n'.join(df_baixado['Precipitacao'].astype(str).tolist())
+                            st.session_state.estacao_input = f"{cod_sel} ({est_obj['nome']})"
+                            st.session_state.idw_meta = None
+                            st.session_state.download_info = {
+                                'tipo': 'single',
+                                'cod': cod_sel,
+                                'nome': est_obj['nome'],
+                                'n_anos': n_anos,
+                                'ano_ini': ano_ini,
+                                'ano_fim': ano_fim,
+                            }
+                            st.rerun()
                     except UserError as e:
                         st.error(str(e))
                     except Exception as e:
@@ -717,7 +869,10 @@ if method == L['m_api']:
 
             else:
                 # Modo IDW: Multiselect de estações + cálculo de pesos em tempo real
-                mapa_opcoes = {f"{e['codigo']} — {e['nome']} ({e['distancia_km']:.1f} km)": e for e in estacoes_no_raio}
+                mapa_opcoes = {
+                    f"{'⭐ ' if i == 0 else ''}{e['codigo']} — {e['nome']} ({e['distancia_km']:.1f} km)": e
+                    for i, e in enumerate(estacoes_no_raio)
+                }
                 padrao_keys = list(mapa_opcoes.keys())[:min(3, len(mapa_opcoes))]
 
                 selecionadas_keys = st.multiselect(
@@ -755,9 +910,10 @@ if method == L['m_api']:
 
                             for idx_est, est_item in enumerate(estacoes_sel):
                                 c_code = est_item['codigo']
-                                aviso_dl.caption(f"Baixando dados da estação {c_code} — {est_item['nome']}...")
+                                aviso_dl.caption(f"Baixando série completa da estação {c_code} — {est_item['nome']} ({idx_est + 1}/{total_sel})...")
                                 if usar_historica:
-                                    df_est = buscar_dataframe_historico(c_code, int(api_y0), int(api_y1))
+                                    # Baixa toda a série disponível sem filtro de datas
+                                    df_est = buscar_dataframe_historico(c_code)
                                 else:
                                     cliente_ana()
                                     user_id, _ = ler_credenciais_ana()
@@ -770,27 +926,41 @@ if method == L['m_api']:
                             aviso_dl.empty()
                             barra_dl.empty()
 
-                            # Interpola via IDW
-                            df_interp, pesos_finais = interpolar_series_idw(series_dict, dists_map, p=2.0)
-                            st.session_state.ana_series_text = '\n'.join(df_interp['Precipitacao'].astype(str).tolist())
-                            codigos_str = ', '.join(series_dict.keys())
-                            st.session_state.estacao_input = f"IDW ({codigos_str})"
+                            if not series_dict:
+                                st.warning("Nenhum dado foi retornado para as estações selecionadas.")
+                            else:
+                                # Interpola via IDW
+                                df_interp, pesos_finais = interpolar_series_idw(series_dict, dists_map, p=2.0)
+                                anos_disp = sorted(df_interp['Ano'].dropna().unique().astype(int))
+                                ano_ini = anos_disp[0]
+                                ano_fim = anos_disp[-1]
+                                n_anos = len(anos_disp)
 
-                            # Metadados de IDW para os relatórios
-                            st.session_state.idw_meta = {
-                                'stations': [
-                                    {
-                                        'codigo': e['codigo'],
-                                        'nome': e['nome'],
-                                        'distancia_km': e['distancia_km'],
-                                        'peso_pct': pesos_finais.get(e['codigo'], 0.0) * 100.0,
-                                    }
-                                    for e in estacoes_sel if e['codigo'] in series_dict
-                                ],
-                                'coords': (st.session_state.proj_lat, st.session_state.proj_lon),
-                            }
-                            st.success(L['idw_success'].format(n=len(series_dict), anos=len(df_interp)))
-                            st.rerun()
+                                st.session_state.ana_series_text = '\n'.join(df_interp['Precipitacao'].astype(str).tolist())
+                                codigos_str = ', '.join(series_dict.keys())
+                                st.session_state.estacao_input = f"IDW ({codigos_str})"
+
+                                # Metadados de IDW para os relatórios
+                                st.session_state.idw_meta = {
+                                    'stations': [
+                                        {
+                                            'codigo': e['codigo'],
+                                            'nome': e['nome'],
+                                            'distancia_km': e['distancia_km'],
+                                            'peso_pct': pesos_finais.get(e['codigo'], 0.0) * 100.0,
+                                        }
+                                        for e in estacoes_sel if e['codigo'] in series_dict
+                                    ],
+                                    'coords': (st.session_state.proj_lat, st.session_state.proj_lon),
+                                }
+                                st.session_state.download_info = {
+                                    'tipo': 'idw',
+                                    'n_est': len(series_dict),
+                                    'n_anos': n_anos,
+                                    'ano_ini': ano_ini,
+                                    'ano_fim': ano_fim,
+                                }
+                                st.rerun()
                         except UserError as e:
                             st.error(str(e))
                         except Exception as e:
