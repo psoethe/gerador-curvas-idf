@@ -1317,28 +1317,34 @@ elif curr_s == 3:
         )
 
         q1, q2, q3 = st.columns(3)
-        q1.metric("Anos na Série", f"{diag_prev['n_apos_descarte']} de {diag_prev['n_bruto']}")
-        cv = diag_prev['cv']
+        n_pos = diag_prev.get('n_apos_descarte', diag_prev.get('n', len(df_temp)))
+        n_raw = diag_prev.get('n_bruto', len(df_temp))
+        pct_d = diag_prev.get('pct_descarte', 0.0)
+        desc_info = f" ({pct_d:.0f}% descartados)" if (n_raw > n_pos and pct_d > 0) else ""
+        q1.metric("Anos na Série", f"{n_pos} de {n_raw}{desc_info}")
+        cv = diag_prev.get('cv', 0.0)
         cv_status = "✅ Normal (0.15 - 0.30)" if (0.15 <= cv <= 0.30) else "⚠️ Fora do intervalo usual"
         q2.metric("Coef. Variação (CV)", f"{cv:.2f}", cv_status)
-        mk = diag_prev['mann_kendall']
-        mk_status = "⚠️ Tendência detectada" if mk['tendencia_significativa'] else "✅ Estacionária"
-        q3.metric("Mann-Kendall (τ)", f"{mk['tau']:.3f}", mk_status)
+        mk = diag_prev.get('mann_kendall', {})
+        mk_trend = mk.get('tendencia_significativa', mk.get('trend', False))
+        mk_status = "⚠️ Tendência detectada" if mk_trend else "✅ Estacionária"
+        q3.metric("Mann-Kendall (τ)", f"{mk.get('tau', 0.0):.3f}", mk_status)
 
-        if diag_prev['anos_descartados']:
-            with st.expander(f"📋 {t('diag_discarded_years', lang)} ({len(diag_prev['anos_descartados'])} anos)", expanded=False):
+        desc_list = diag_prev.get('anos_descartados', [])
+        if desc_list:
+            with st.expander(f"📋 {t('diag_discarded_years', lang)} ({len(desc_list)} anos)", expanded=False):
                 df_desc = pd.DataFrame([{
-                    'Ano': item['ano'],
-                    'Precipitação (mm)': item['precipitacao'],
+                    'Ano': item.get('ano', '—'),
+                    'Precipitação (mm)': item.get('precipitacao', item.get('valor', 0.0)),
                     'Dias Válidos': item.get('dias_validos', '—'),
-                    'Motivo': item['motivo'],
-                } for item in diag_prev['anos_descartados']])
+                    'Motivo': item.get('motivo', '—'),
+                } for item in desc_list])
                 st.dataframe(df_desc, use_container_width=True, hide_index=True)
 
-        outs = diag_prev['outliers']
+        outs = diag_prev.get('outliers', [])
         if outs:
             for o in outs:
-                st.warning(f"⚠️ {t('diag_outlier_found', lang).format(o['ano'], o['valor'], o['teste'])}")
+                st.warning(f"⚠️ {t('diag_outlier_found', lang).format(o.get('ano', '—'), o.get('valor', 0.0), o.get('teste', '—'))}")
 
         st.markdown("### 🧮 Método de Ajuste da Equação de Sherman")
         modo_opts = [
@@ -1376,7 +1382,7 @@ elif curr_s == 3:
                     limiar_cob=float(limiar_cob),
                     excluir_inc=bool(excluir_inc),
                     modo_sherman=st.session_state.modo_ajuste_sherman,
-                    idw_p=float(st.session_state.idw_p),
+                    idw_p=float(st.session_state.get('idw_p', 2.0)),
                 )
                 st.session_state.calc_hash = h
                 st.session_state.report_ctx = {
@@ -1419,7 +1425,7 @@ elif curr_s == 4:
             limiar_cob=float(st.session_state.limiar_cobertura_pct),
             excluir_inc=bool(st.session_state.excluir_incompletos),
             modo_sherman=st.session_state.modo_ajuste_sherman,
-            idw_p=float(st.session_state.idw_p),
+            idw_p=float(st.session_state.get('idw_p', 2.0)),
         )
         params_changed = (st.session_state.calc_hash is not None and current_hash != st.session_state.calc_hash)
 
@@ -1475,16 +1481,17 @@ elif curr_s == 4:
                     if mk_info:
                         tau_val = mk_info.get('tau', 0.0)
                         pval = mk_info.get('p_value', 1.0)
-                        st.markdown(f"- **{t('diag_mk_title', lang)}:** τ=`{tau_val:.4f}`, p-valor=`{pval:.4f}` — {t('diag_mk_trend', lang).format(tau_val, pval) if mk_info.get('tendencia_significativa') else t('diag_mk_no_trend', lang).format(tau_val, pval)}")
+                        mk_sig = mk_info.get('tendencia_significativa', mk_info.get('trend', False))
+                        st.markdown(f"- **{t('diag_mk_title', lang)}:** τ=`{tau_val:.4f}`, p-valor=`{pval:.4f}` — {t('diag_mk_trend', lang).format(tau_val, pval) if mk_sig else t('diag_mk_no_trend', lang).format(tau_val, pval)}")
 
                 desc_anos = results.get('anos_descartados', [])
                 if desc_anos:
                     st.markdown(f"**{t('diag_discarded_years', lang)}:**")
                     df_desc_r = pd.DataFrame([{
-                        'Ano': a['ano'],
-                        'Precipitação (mm)': a['precipitacao'],
+                        'Ano': a.get('ano', '—'),
+                        'Precipitação (mm)': a.get('precipitacao', a.get('valor', 0.0)),
                         'Dias Válidos': a.get('dias_validos', '—'),
-                        'Motivo': a['motivo'],
+                        'Motivo': a.get('motivo', '—'),
                     } for a in desc_anos])
                     st.dataframe(df_desc_r, use_container_width=True, hide_index=True)
 

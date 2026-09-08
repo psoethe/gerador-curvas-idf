@@ -1317,6 +1317,7 @@ def analisar_qualidade_serie(
                 anos_descartados.append({
                     'ano': ano,
                     'valor': val,
+                    'precipitacao': val,
                     'dias_validos': int(round(dv)),
                     'cobertura_pct': round(cob, 1),
                     'motivo': (
@@ -1333,6 +1334,11 @@ def analisar_qualidade_serie(
 
     y = df_limpo[col_p].dropna().values
     n = len(y)
+    n_bruto = len(series_df)
+    n_apos_descarte = n
+    n_descartados = len(anos_descartados)
+    pct_descarte = (n_descartados / n_bruto * 100.0) if n_bruto > 0 else 0.0
+
     mu = float(np.mean(y)) if n > 0 else 0.0
     sigma = float(np.std(y, ddof=1)) if n > 1 else 0.0
     cv = float(sigma / mu) if mu > 0 else 0.0
@@ -1377,6 +1383,7 @@ def analisar_qualidade_serie(
                     outliers.append({
                         'ano': ano,
                         'valor': val,
+                        'precipitacao': val,
                         'z_score': round(z, 2),
                         'teste': teste_nome,
                         'msg': t('diag_outlier_found', lang).format(ano, val, teste_nome),
@@ -1389,6 +1396,10 @@ def analisar_qualidade_serie(
         'anos_descartados': anos_descartados,
         'tem_dias_validos': tem_dias_validos,
         'n': n,
+        'n_bruto': n_bruto,
+        'n_apos_descarte': n_apos_descarte,
+        'n_descartados': n_descartados,
+        'pct_descarte': pct_descarte,
         'mu': mu,
         'sigma': sigma,
         'cv': round(cv, 4),
@@ -1398,6 +1409,7 @@ def analisar_qualidade_serie(
             'tau': round(tau, 4),
             'p_value': round(p_val, 4),
             'trend': mk_trend,
+            'tendencia_significativa': mk_trend,
             'msg': mk_msg,
         },
         'outliers': outliers,

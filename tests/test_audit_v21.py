@@ -277,6 +277,26 @@ def test_p2_10_leap_year_days_coverage():
     assert len(diag['anos_descartados']) == 0, (
         f"Anos válidos foram descartados indevidamente: {diag['anos_descartados']}"
     )
+    assert diag['n_bruto'] == 2
+    assert diag['n_apos_descarte'] == 2
+    assert diag['n_descartados'] == 0
+    assert diag['pct_descarte'] == 0.0
+    assert 'tendencia_significativa' in diag['mann_kendall']
+
+    # Teste de ano incompleto descartado com chaves completas
+    df_test2 = pd.DataFrame({
+        'Ano': [2022, 2023, 2024],
+        'Precipitacao': [90.0, 100.0, 110.0],
+        'DiasValidos': [100.0, 365.0, 366.0],
+    })
+    diag2 = analisar_qualidade_serie(df_test2, limiar_cobertura_pct=90.0, excluir_incompletos=True)
+    assert diag2['n_bruto'] == 3
+    assert diag2['n_apos_descarte'] == 2
+    assert diag2['n_descartados'] == 1
+    assert abs(diag2['pct_descarte'] - (1.0 / 3.0 * 100.0)) < 0.1
+    assert 'precipitacao' in diag2['anos_descartados'][0]
+    assert 'valor' in diag2['anos_descartados'][0]
+
 
 
 # ── P2-11: Texto de plausibilidade do CV no i18n ──────────────────────────────
