@@ -227,6 +227,67 @@ def _sherman_block(doc: Document, sherman: dict, lang: str) -> None:
         _set_cell_bg(vc, 'eaf4fb')
     doc.add_paragraph()
 
+    # Detailed Sherman Parameters Table in Word
+    p_tbl = doc.add_paragraph()
+    p_tbl.add_run(
+        'Parâmetros Detalhados da Equação de Sherman (com Intervalos de Confiança)' if is_pt
+        else 'Detailed Sherman Equation Parameters (with Confidence Intervals)'
+    ).bold = True
+    p_tbl.runs[0].font.size = Pt(10)
+    p_tbl.runs[0].font.color.rgb = _BLUE_DARK
+
+    ci_a = f"[{sherman.get('ci_A', (0,0))[0]:.1f}, {sherman.get('ci_A', (0,0))[1]:.1f}]" if 'ci_A' in sherman else '—'
+    ci_b = f"[{sherman.get('ci_B', (0,0))[0]:.4f}, {sherman.get('ci_B', (0,0))[1]:.4f}]" if 'ci_B' in sherman else '—'
+    ci_c = f"[{sherman.get('ci_C', (0,0))[0]:.2f}, {sherman.get('ci_C', (0,0))[1]:.2f}]" if 'ci_C' in sherman else '—'
+    ci_d = f"[{sherman.get('ci_D', (0,0))[0]:.4f}, {sherman.get('ci_D', (0,0))[1]:.4f}]" if 'ci_D' in sherman else '—'
+
+    rows_detail = [
+        ('A (constante)', f'{A:.4f}', f"{sherman.get('se_A', 0.0):.4f}", ci_a, '10 a 20000'),
+        ('B (expoente TR)', f'{B:.4f}', f"{sherman.get('se_B', 0.0):.4f}", ci_b, '0,10 a 0,40'),
+        ('C (ajuste tempo)', f'{c_abs:.4f}', f"{sherman.get('se_C', 0.0):.4f}", ci_c, '5,0 a 60,0'),
+        ('D (expoente tempo)', f'{D:.4f}', f"{sherman.get('se_D', 0.0):.4f}", ci_d, '0,55 a 0,95'),
+    ]
+    hdrs_detail = ['Parâmetro', 'Valor', 'Erro Padrão', 'IC 95%', 'Faixa Plausível'] if is_pt else ['Parameter', 'Value', 'Std Error', '95% CI', 'Plausible Range']
+
+    dtbl = doc.add_table(rows=len(rows_detail) + 1, cols=5)
+    dtbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+    dtbl.style = 'Table Grid'
+    for ci, h in enumerate(hdrs_detail):
+        c = dtbl.rows[0].cells[ci]
+        c.text = h
+        c.paragraphs[0].runs[0].bold = True
+        c.paragraphs[0].runs[0].font.size = Pt(8.5)
+        c.paragraphs[0].runs[0].font.color.rgb = _WHITE
+        c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _set_cell_bg(c, '3730a3')
+
+    for ri, rvals in enumerate(rows_detail):
+        row = dtbl.rows[ri + 1]
+        bg = 'e0e7ff' if ri % 2 == 0 else 'ffffff'
+        for ci, val in enumerate(rvals):
+            cell = row.cells[ci]
+            cell.text = str(val)
+            cell.paragraphs[0].runs[0].font.size = Pt(8.5)
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _set_cell_bg(cell, bg)
+
+    if 'erro_max_celula' in sherman:
+        doc.add_paragraph()
+        p_err = doc.add_paragraph()
+        err_text = (
+            f"Erro Máximo por Célula: {sherman['erro_max_celula']:.2f}%  |  "
+            f"Erro Médio por Célula: {sherman['erro_medio_celula']:.2f}%  |  "
+            f"Ajuste: {sherman.get('modo_ajuste', 'log')}"
+        ) if is_pt else (
+            f"Max Cell Error: {sherman['erro_max_celula']:.2f}%  |  "
+            f"Mean Cell Error: {sherman['erro_medio_celula']:.2f}%  |  "
+            f"Fit Mode: {sherman.get('modo_ajuste', 'log')}"
+        )
+        p_err.add_run(err_text).italic = True
+        p_err.runs[0].font.size = Pt(8.5)
+        p_err.runs[0].font.color.rgb = _GREY_DARK
+    doc.add_paragraph()
+
 
 # ── Main public function ──────────────────────────────────────────────────────
 
@@ -319,12 +380,16 @@ def generate_word_report(
     ]
     if coords and len(coords) == 2 and coords[0] != 0.0:
         meta_rows.append(('Coordenadas', f'Lat: {coords[0]:.4f}°, Lon: {coords[1]:.4f}°'))
+    iso_txt = str(isozona)
+    if results.get('isozona_origem'):
+        iso_txt += f" ({results.get('isozona_origem')})"
     meta_rows.extend([
         (t('report_estacao', lang),      estacao or '-'),
         (t('report_period', lang),       period_str),
-        (t('report_isozona', lang),      isozona),
+        (t('report_isozona', lang),      iso_txt),
         (t('report_n', lang),            f'N = {n} {t("report_n_suffix", lang)}'),
-        (t('report_date', lang),         now.strftime('%d/%m/%Y %H:%M')),
+        ('Versão do Sistema / System Ver.', 'Soethe·ii / SII·IDF v2.1'),
+        (t('report_date', lang),         now.strftime('%d/%m/%Y %H:%M:%S')),
         ('ID', report_id),
     ])
     mt = doc.add_table(rows=len(meta_rows), cols=2)
@@ -362,10 +427,10 @@ def generate_word_report(
         p_idw.runs[0].font.size = Pt(11)
         p_idw.runs[0].font.color.rgb = _BLUE_DARK
 
-        idw_tbl = doc.add_table(rows=len(idw_meta['stations']) + 1, cols=4)
+        idw_tbl = doc.add_table(rows=len(idw_meta['stations']) + 1, cols=6)
         idw_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
         idw_tbl.style = 'Table Grid'
-        hdr_texts = ['Código', 'Estação', 'Distância (km)', 'Peso (%)'] if is_pt else ['Code', 'Station', 'Distance (km)', 'Weight (%)']
+        hdr_texts = ['Código', 'Estação', 'Operadora', 'Alt. (m)', 'Dist. (km)', 'Peso (%)'] if is_pt else ['Code', 'Station', 'Operator', 'Alt. (m)', 'Dist. (km)', 'Weight (%)']
         for ci, h in enumerate(hdr_texts):
             c = idw_tbl.rows[0].cells[ci]
             c.text = h
@@ -378,9 +443,12 @@ def generate_word_report(
         for ri, s_info in enumerate(idw_meta['stations']):
             row = idw_tbl.rows[ri + 1]
             bg = 'eaf4fb' if ri % 2 == 0 else 'ffffff'
+            alt_txt = f"{s_info.get('altitude', 0.0):.0f}" if s_info.get('altitude') is not None else '—'
             vals = [
                 str(s_info.get('codigo', '—')),
                 str(s_info.get('nome', '—')),
+                str(s_info.get('operadora', '—')),
+                alt_txt,
                 f"{s_info.get('distancia_km', 0.0):.2f}",
                 f"{s_info.get('peso_pct', 0.0):.1f}%",
             ]
@@ -391,8 +459,69 @@ def generate_word_report(
                 cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
                 _set_cell_bg(cell, bg)
 
+    # Anos Descartados no Word
+    anos_desc = results.get('anos_descartados', [])
+    if anos_desc:
+        doc.add_paragraph()
+        p_desc = doc.add_paragraph()
+        p_desc.add_run(
+            'Anos Descartados da Análise (Rastreabilidade)' if is_pt
+            else 'Years Excluded from Analysis (Traceability)'
+        ).bold = True
+        p_desc.runs[0].font.size = Pt(11)
+        p_desc.runs[0].font.color.rgb = RGBColor(0xb9, 0x1c, 0x1c)
+
+        desc_tbl = doc.add_table(rows=len(anos_desc) + 1, cols=4)
+        desc_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        desc_tbl.style = 'Table Grid'
+        desc_hdrs = ['Ano', 'Chuva (mm)', 'Dias Válidos', 'Motivo da Exclusão'] if is_pt else ['Year', 'Rainfall (mm)', 'Valid Days', 'Reason for Exclusion']
+        for ci, h in enumerate(desc_hdrs):
+            c = desc_tbl.rows[0].cells[ci]
+            c.text = h
+            c.paragraphs[0].runs[0].bold = True
+            c.paragraphs[0].runs[0].font.size = Pt(9)
+            c.paragraphs[0].runs[0].font.color.rgb = _WHITE
+            c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _set_cell_bg(c, 'b91c1c')
+
+        for ri, item in enumerate(anos_desc):
+            row = desc_tbl.rows[ri + 1]
+            bg = 'fee2e2' if ri % 2 == 0 else 'ffffff'
+            vals = [
+                str(item.get('ano', '—')),
+                f"{item.get('valor', 0.0):.1f}",
+                str(item.get('dias_validos', '—')),
+                str(item.get('motivo', '—')),
+            ]
+            for ci, val in enumerate(vals):
+                cell = row.cells[ci]
+                cell.text = val
+                cell.paragraphs[0].runs[0].font.size = Pt(9)
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _set_cell_bg(cell, bg)
+
     doc.add_paragraph()
-    _add_df_table(doc, series_df)
+    df_hist_word = series_df.copy()
+    col_p = t('col_precip', lang)
+    if col_p not in df_hist_word.columns and 'Precipitacao' in df_hist_word.columns:
+        df_hist_word[col_p] = df_hist_word['Precipitacao']
+    col_a = t('col_ano', lang)
+    if col_a not in df_hist_word.columns and 'Ano' in df_hist_word.columns:
+        df_hist_word[col_a] = df_hist_word['Ano']
+    colunas_word = [c for c in [col_a, t('col_data', lang), t('col_origem', lang), col_p] if c in df_hist_word.columns]
+    if len(colunas_word) >= 2:
+        df_hist_word = df_hist_word[colunas_word]
+
+    _add_df_table(doc, df_hist_word)
+    if idw_meta and idw_meta.get('stations'):
+        p_nota = doc.add_paragraph()
+        p_nota.add_run(
+            'Nota: Os valores de precipitação acima representam a máxima diária ponderada espacialmente via IDW, '
+            'não correspondendo a um mesmo dia de evento registrado em calendário único.' if is_pt
+            else 'Note: Precipitation values represent IDW spatially weighted daily maxima, not a single calendar event date.'
+        ).italic = True
+        p_nota.runs[0].font.size = Pt(8.5)
+        p_nota.runs[0].font.color.rgb = _GREY_DARK
     _add_figure(doc, png_hist, 'Figura 1 - Serie Historica de Precipitacao Maxima Diaria Anual')
     doc.add_page_break()
 

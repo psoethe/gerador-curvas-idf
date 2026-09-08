@@ -393,6 +393,86 @@ LABELS: dict[str, dict[str, str]] = {
     'geo_station_name':     {'PT': 'Nome da Estação',                    'EN': 'Station Name'},
     'geo_distance_km':      {'PT': 'Distância (km)',                     'EN': 'Distance (km)'},
     'geo_weight_pct':       {'PT': 'Peso Ponderado (%)',                 'EN': 'Weighted Weight (%)'},
+
+    # ── Stepper em 4 Etapas ───────────────────────────────────────────────────
+    'stepper_step1':        {'PT': 'Etapa 1: 📍 Localização do Projeto', 'EN': 'Step 1: 📍 Project Location'},
+    'stepper_step2':        {'PT': 'Etapa 2: 🌧️ Dados Pluviométricos',  'EN': 'Step 2: 🌧️ Rainfall Data'},
+    'stepper_step3':        {'PT': 'Etapa 3: 🔍 Diagnóstico e Parâmetros', 'EN': 'Step 3: 🔍 Diagnostics & Parameters'},
+    'stepper_step4':        {'PT': 'Etapa 4: 📊 Resultados e Memorial',  'EN': 'Step 4: 📊 Results & Report'},
+    'btn_confirm_loc':      {'PT': 'Confirmar Local do Projeto ➡️',     'EN': 'Confirm Project Location ➡️'},
+    'btn_run_analysis':     {'PT': '⚡ Gerar Análise IDF',                'EN': '⚡ Generate IDF Analysis'},
+    'btn_reset_analysis':   {'PT': '🔄 Nova Análise',                    'EN': '🔄 New Analysis'},
+
+    # ── Invalidação de Estado & Hash ──────────────────────────────────────────
+    'hash_warning_title':   {'PT': '⚠️ Parâmetros de Entrada Modificados',
+                             'EN': '⚠️ Input Parameters Modified'},
+    'hash_warning_desc':    {'PT': 'Os parâmetros de entrada (isozona, coordenadas, dados ou período) foram modificados após a última execução. Os resultados abaixo estão desatualizados. Clique em **"⚡ Gerar Análise IDF"** para recalcular.',
+                             'EN': 'Input parameters (isozone, coordinates, data, or period) were modified after the last run. Results below are out of date. Click **"⚡ Generate IDF Analysis"** to recalculate.'},
+    'export_blocked_msg':   {'PT': '🚫 Exportação bloqueada: recalcule a análise com os parâmetros atuais antes de exportar o memorial de cálculo.',
+                             'EN': '🚫 Export blocked: recalculate analysis with current parameters before exporting calculation report.'},
+
+    # ── Abas Consolidadas ─────────────────────────────────────────────────────
+    'tab_data_diag':        {'PT': '📋 Dados e Diagnóstico',             'EN': '📋 Data & Diagnostics'},
+    'tab_stat_fit':         {'PT': '📐 Ajuste Estatístico',              'EN': '📐 Statistical Fit'},
+    'tab_curves_eq':        {'PT': '📈 Curvas e Equação',                'EN': '📈 Curves & Equation'},
+    'btn_dl_csv':           {'PT': 'Baixar Tabela (CSV)',                'EN': 'Download Table (CSV)'},
+    'col_origem':           {'PT': 'Origem',                             'EN': 'Origin'},
+    'val_idw_origin':       {'PT': 'Série Sintética Ponderada (IDW)',    'EN': 'Synthetic Weighted Series (IDW)'},
+
+    # ── Diagnóstico de Qualidade da Série ─────────────────────────────────────
+    'diag_quality_title':   {'PT': 'Diagnóstico Hidrológico de Qualidade da Série',
+                             'EN': 'Hydrological Quality Diagnostics'},
+    'diag_coverage_label':  {'PT': 'Limiar Mínimo de Cobertura Anual (%)',
+                             'EN': 'Minimum Annual Coverage Threshold (%)'},
+    'diag_coverage_help':   {'PT': 'Anos civis com menos dias válidos que este percentual de 365 dias são automaticamente desconsiderados do cálculo e documentados no memorial.',
+                             'EN': 'Calendar years with fewer valid days than this percentage of 365 days are automatically excluded and recorded in report.'},
+    'diag_cv_label':        {'PT': 'Coeficiente de Variação (CV = σ/μ)', 'EN': 'Coefficient of Variation (CV = σ/μ)'},
+    'diag_cv_alert':        {'PT': 'Coeficiente de Variação (CV = {:.2f}) fora da faixa usual para máximas diárias no Brasil (0,15 a 0,30). Indica grande dispersão ou anos com falhas de registro.',
+                             'EN': 'Coefficient of Variation (CV = {:.2f}) outside usual Brazilian range (0.15 to 0.30). Indicates high dispersion or incomplete years.'},
+    'diag_cv_ok':           {'PT': 'Coeficiente de Variação (CV = {:.2f}) dentro da faixa de plausibilidade esperada (0,15 a 0,30).',
+                             'EN': 'Coefficient of Variation (CV = {:.2f}) within expected plausibility range (0.15 to 0.30).'},
+    'diag_mk_title':        {'PT': 'Teste de Tendência e Estacionariedade (Mann-Kendall)',
+                             'EN': 'Trend & Stationarity Test (Mann-Kendall)'},
+    'diag_mk_trend':        {'PT': 'Tendência temporal significativa detectada (τ = {:.4f}, p-valor = {:.4f} < 0,05). A premissa de estacionariedade da série para Gumbel requer cautela.',
+                             'EN': 'Statistically significant trend detected (τ = {:.4f}, p-value = {:.4f} < 0.05). Stationarity assumption for Gumbel requires caution.'},
+    'diag_mk_no_trend':     {'PT': 'Série estacionária sem tendência temporal estatisticamente significativa (τ = {:.4f}, p-valor = {:.4f} ≥ 0,05).',
+                             'EN': 'Stationary series with no statistically significant trend (τ = {:.4f}, p-value = {:.4f} ≥ 0.05).'},
+    'diag_outlier_title':   {'PT': 'Teste de Outliers (Grubbs e Chauvenet)',
+                             'EN': 'Outlier Detection (Grubbs & Chauvenet)'},
+    'diag_outlier_found':   {'PT': 'Ano {} com valor {:.1f} mm sinalizado como outlier estatístico ({}) — mantido na análise conforme recomendação hidrológica.',
+                             'EN': 'Year {} with value {:.1f} mm flagged as statistical outlier ({}) — kept in analysis per hydrological practice.'},
+    'diag_discarded_years': {'PT': 'Anos Descartados da Análise (com registro obrigatório no memorial)',
+                             'EN': 'Years Excluded from Analysis (mandatory report recording)'},
+
+    # ── Consistência Física da Matriz IDF ─────────────────────────────────────
+    'phys_cons_title':      {'PT': 'Verificação de Consistência Física da Matriz IDF',
+                             'EN': 'IDF Matrix Physical Consistency Verification'},
+    'phys_cons_ok':         {'PT': '✅ Todas as asserções de monotonicidade temporal e de frequência foram satisfeitas.',
+                             'EN': '✅ All temporal and frequency monotonicity assertions were satisfied.'},
+    'phys_cons_time_viol':  {'PT': '⚠️ Violação de monotonicidade temporal: intensidade cresce com a duração em TR = {} anos (t = {} min [{:.2f} mm/h] ➔ t = {} min [{:.2f} mm/h]).',
+                             'EN': '⚠️ Temporal monotonicity violation: intensity increases with duration for TR = {} yrs (t = {} min [{:.2f} mm/h] ➔ t = {} min [{:.2f} mm/h]).'},
+    'phys_cons_freq_viol':  {'PT': '⚠️ Violação de monotonicidade de frequência: intensidade não cresce com o período de retorno em t = {} min (TR = {} anos [{:.2f} mm/h] ➔ TR = {} anos [{:.2f} mm/h]).',
+                             'EN': '⚠️ Frequency monotonicity violation: intensity does not increase with return period at t = {} min (TR = {} yrs [{:.2f} mm/h] ➔ TR = {} yrs [{:.2f} mm/h]).'},
+
+    # ── Ajuste de Sherman & Bounds ───────────────────────────────────────────
+    'tbl_sherman_coefs':    {'PT': 'Parâmetros Ajustados da Equação de Sherman (Ajuste em Espaço Logarítmico)',
+                             'EN': 'Adjusted Sherman Equation Parameters (Log-Space Fit)'},
+    'max_cell_error':       {'PT': 'Erro Máximo por Célula',             'EN': 'Max Cell Error'},
+    'mean_cell_error':      {'PT': 'Erro Médio por Célula',              'EN': 'Mean Cell Error'},
+    'bound_touch_alert':    {'PT': '⚠️ O parâmetro {} ({:.4f}) encostou no limite do ajuste ({:.4f}). Ajuste pode estar degenerado.',
+                             'EN': '⚠️ Parameter {} ({:.4f}) hit optimization bound ({:.4f}). Fit may be degenerate.'},
+    'param_out_range':      {'PT': '⚠️ Parâmetro {} ({:.4f}) fora da faixa usual da literatura hidrológica [{} a {}].',
+                             'EN': '⚠️ Parameter {} ({:.4f}) outside usual hydrological literature range [{} to {}].'},
+
+    # ── Isozonas & Rastreabilidade ────────────────────────────────────────────
+    'isozona_auto_badge':   {'PT': 'Isozona {} (detectada na coordenada)', 'EN': 'Isozone {} (detected from coordinate)'},
+    'isozona_manual_badge': {'PT': 'Isozona {} (alterada manualmente)',  'EN': 'Isozone {} (manually overridden)'},
+    'idw_weight_alert':     {'PT': '⚠️ Estação {} com peso ponderado de apenas {:.1f}% (< 2%). Recomenda-se removê-la da seleção IDW.',
+                             'EN': '⚠️ Station {} has residual weight of only {:.1f}% (< 2%). Consider removing it from IDW selection.'},
+    'idw_colocated_alert':  {'PT': '⚠️ Todas as estações selecionadas estão a menos de 2 km entre si (co-localizadas). O IDW opera como média local sem agregar informação espacial.',
+                             'EN': '⚠️ Selected stations are within 2 km of each other (co-located). IDW behaves as a local average without adding spatial gradient.'},
+    'idw_neff_label':       {'PT': 'Número Efetivo de Estações (N_eff)', 'EN': 'Effective Number of Stations (N_eff)'},
+
 }
 
 

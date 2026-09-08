@@ -423,17 +423,19 @@ def generate_pdf_report(
     ]
     if coords and len(coords) == 2 and coords[0] != 0.0:
         meta_rows.append(('Coordenadas / Coordinates', f'Lat: {coords[0]:.4f}°, Lon: {coords[1]:.4f}°'))
+    iso_txt = str(isozona)
+    if results.get('isozona_origem'):
+        iso_txt += f" ({results.get('isozona_origem')})"
     meta_rows.extend([
         (t('report_estacao', lang),       estacao or '—'),
-        (t('report_isozona', lang),       isozona),
+        (t('report_isozona', lang),       iso_txt),
         (t('report_period_filter', lang), period_str),
         (t('report_n', lang),             f'{n}{t("report_n_suffix", lang)}'),
         (t('report_mu', lang),            f'{mu:.3f} mm'),
         (t('report_sigma', lang),         f'{sigma:.3f} mm'),
-        ('Yn',                            f'{gumbel_mem["stats"]["yn"]:.4f}'),
-        ('Sn',                            f'{gumbel_mem["stats"]["sn"]:.4f}'),
+        ('Versão do Sistema / System Ver.', 'Soethe·ii / SII·IDF v2.1'),
         ('ID Relatório / Report ID',      report_id),
-        ('Data / Date',                   now.strftime('%d/%m/%Y %H:%M')),
+        ('Data e Hora / Date & Time',     now.strftime('%d/%m/%Y %H:%M:%S')),
     ])
     story.append(_kv_table(meta_rows, st))
     story.append(PageBreak())
@@ -493,16 +495,19 @@ def generate_pdf_report(
             else 'Spatial IDW Interpolation (Inverse Distance Weighting)') + '</b>',
             st['H3']
         ))
-        idw_hdr = ['Código', 'Estação', 'Distância (km)', 'Peso Ponderado (%)'] if is_pt else ['Code', 'Station', 'Distance (km)', 'Weight (%)']
+        idw_hdr = ['Código', 'Estação', 'Operadora', 'Alt. (m)', 'Dist. (km)', 'Peso (%)'] if is_pt else ['Code', 'Station', 'Operator', 'Alt. (m)', 'Dist. (km)', 'Weight (%)']
         idw_rows = [[Paragraph(f'<b>{h}</b>', st['Normal']) for h in idw_hdr]]
         for s_info in idw_meta['stations']:
+            alt_txt = f"{s_info.get('altitude', 0.0):.0f}" if s_info.get('altitude') is not None else '—'
             idw_rows.append([
                 Paragraph(str(s_info.get('codigo', '—')), st['Normal']),
                 Paragraph(str(s_info.get('nome', '—')), st['Normal']),
+                Paragraph(str(s_info.get('operadora', '—')), st['Normal']),
+                Paragraph(alt_txt, st['Normal']),
                 Paragraph(f"{s_info.get('distancia_km', 0.0):.2f}", st['Normal']),
                 Paragraph(f"{s_info.get('peso_pct', 0.0):.1f}%", st['Normal']),
             ])
-        idw_tbl = Table(idw_rows, colWidths=[2.5 * cm, 7.5 * cm, 3.5 * cm, 3.5 * cm])
+        idw_tbl = Table(idw_rows, colWidths=[2.2 * cm, 5.5 * cm, 3.0 * cm, 2.0 * cm, 2.3 * cm, 2.0 * cm])
         idw_tbl.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), BLUE_MID),
             ('TEXTCOLOR', (0, 0), (-1, 0), WHITE),
@@ -515,6 +520,36 @@ def generate_pdf_report(
         story.append(idw_tbl)
         story.append(Spacer(1, 0.3 * cm))
 
+    # Tabela de Anos Descartados (se houver exclusão por qualidade)
+    anos_desc = results.get('anos_descartados', [])
+    if anos_desc:
+        story.append(Paragraph(
+            '<b>' + ('Anos Descartados da Análise (com registro de rastreabilidade)' if is_pt
+            else 'Years Excluded from Analysis (traceability record)') + '</b>',
+            st['H3']
+        ))
+        desc_hdr = ['Ano', 'Chuva (mm)', 'Dias Válidos', 'Motivo da Exclusão'] if is_pt else ['Year', 'Rainfall (mm)', 'Valid Days', 'Reason for Exclusion']
+        desc_rows = [[Paragraph(f'<b>{h}</b>', st['Normal']) for h in desc_hdr]]
+        for item in anos_desc:
+            desc_rows.append([
+                Paragraph(str(item.get('ano', '—')), st['Normal']),
+                Paragraph(f"{item.get('valor', 0.0):.1f}", st['Normal']),
+                Paragraph(str(item.get('dias_validos', '—')), st['Normal']),
+                Paragraph(str(item.get('motivo', '—')), st['Normal']),
+            ])
+        desc_tbl = Table(desc_rows, colWidths=[2.0 * cm, 3.0 * cm, 2.5 * cm, CONTENT_W - 7.5 * cm])
+        desc_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#b91c1c')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), WHITE),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#fca5a5')),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [WHITE, colors.HexColor('#fee2e2')]),
+        ]))
+        story.append(desc_tbl)
+        story.append(Spacer(1, 0.3 * cm))
+
     story.extend(_png_flowable(png_hist))
     story.append(Paragraph(
         'Figura 1 — Série histórica de precipitação máxima diária anual' if is_pt
@@ -524,7 +559,30 @@ def generate_pdf_report(
     story.append(Spacer(1, 0.4 * cm))
 
     story.append(Paragraph(t('tbl1_title', lang), st['H3']))
-    story.append(_df_to_rl_table(series_df.reset_index(drop=True)))
+
+    # Formata tabela da série para visualização limpa
+    df_hist_display = series_df.copy()
+    col_p = t('col_precip', lang)
+    if col_p not in df_hist_display.columns and 'Precipitacao' in df_hist_display.columns:
+        df_hist_display[col_p] = df_hist_display['Precipitacao']
+    col_a = t('col_ano', lang)
+    if col_a not in df_hist_display.columns and 'Ano' in df_hist_display.columns:
+        df_hist_display[col_a] = df_hist_display['Ano']
+
+    # Se a série tem coluna Origem/Data sintética (IDW ou Manual), apresenta de forma transparente
+    colunas_exibir = [c for c in [col_a, t('col_data', lang), t('col_origem', lang), col_p] if c in df_hist_display.columns]
+    if len(colunas_exibir) >= 2:
+        df_hist_display = df_hist_display[colunas_exibir]
+
+    story.append(_df_to_rl_table(df_hist_display.reset_index(drop=True)))
+    if idw_meta and idw_meta.get('stations'):
+        story.append(Spacer(1, 0.15 * cm))
+        story.append(Paragraph(
+            '<i>Nota: Os valores de precipitação acima representam a máxima diária ponderada espacialmente via IDW, '
+            'não correspondendo necessariamente a um mesmo dia de evento entre as estações.</i>' if is_pt
+            else '<i>Note: Precipitation values above represent IDW spatially weighted daily maxima and do not imply an identical event date across stations.</i>',
+            st['Caption']
+        ))
     story.append(PageBreak())
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1505,7 +1563,47 @@ def generate_pdf_report(
         ('RIGHTPADDING',  (0, 0), (-1, -1), 3),
     ]))
     story.append(metrics_row)
-    story.append(Spacer(1, 0.4 * cm))
+    story.append(Spacer(1, 0.3 * cm))
+
+    # Tabela estruturada de parâmetros de Sherman com IC 95% e métricas celulares
+    sh_hdr = ['Parâmetro', 'Valor', 'Erro Padrão', 'IC 95%', 'Faixa Plausível'] if is_pt else ['Parameter', 'Value', 'Std Error', '95% CI', 'Plausible Range']
+    ci_a_str = f"[{sherman.get('ci_A', (0,0))[0]:.1f}, {sherman.get('ci_A', (0,0))[1]:.1f}]" if 'ci_A' in sherman else '—'
+    ci_b_str = f"[{sherman.get('ci_B', (0,0))[0]:.4f}, {sherman.get('ci_B', (0,0))[1]:.4f}]" if 'ci_B' in sherman else '—'
+    ci_c_str = f"[{sherman.get('ci_C', (0,0))[0]:.2f}, {sherman.get('ci_C', (0,0))[1]:.2f}]" if 'ci_C' in sherman else '—'
+    ci_d_str = f"[{sherman.get('ci_D', (0,0))[0]:.4f}, {sherman.get('ci_D', (0,0))[1]:.4f}]" if 'ci_D' in sherman else '—'
+
+    sh_rows = [
+        [Paragraph(f'<b>{h}</b>', st['Normal']) for h in sh_hdr],
+        [Paragraph('A (constante)', st['Normal']), Paragraph(f'{A_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_A', 0.0):.4f}", st['Normal']), Paragraph(ci_a_str, st['Normal']), Paragraph('10 a 20000', st['Normal'])],
+        [Paragraph('B (expoente TR)', st['Normal']), Paragraph(f'{B_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_B', 0.0):.4f}", st['Normal']), Paragraph(ci_b_str, st['Normal']), Paragraph('0,10 a 0,40', st['Normal'])],
+        [Paragraph('C (ajuste tempo)', st['Normal']), Paragraph(f'{C_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_C', 0.0):.4f}", st['Normal']), Paragraph(ci_c_str, st['Normal']), Paragraph('5,0 a 60,0', st['Normal'])],
+        [Paragraph('D (expoente tempo)', st['Normal']), Paragraph(f'{D_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_D', 0.0):.4f}", st['Normal']), Paragraph(ci_d_str, st['Normal']), Paragraph('0,55 a 0,95', st['Normal'])],
+    ]
+    sh_tbl = Table(sh_rows, colWidths=[4.0 * cm, 3.0 * cm, 3.0 * cm, 4.0 * cm, 3.0 * cm])
+    sh_tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3730a3')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), WHITE),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#cbd5e1')),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [WHITE, colors.HexColor('#e0e7ff')]),
+    ]))
+    story.append(sh_tbl)
+    story.append(Spacer(1, 0.2 * cm))
+
+    if 'erro_max_celula' in sherman:
+        err_msg = (
+            f"Erro Máximo por Célula: <b>{sherman['erro_max_celula']:.2f}%</b> | "
+            f"Erro Médio por Célula: <b>{sherman['erro_medio_celula']:.2f}%</b> | "
+            f"Ajuste: <b>{sherman.get('modo_ajuste', 'log')}</b>"
+        ) if is_pt else (
+            f"Max Cell Error: <b>{sherman['erro_max_celula']:.2f}%</b> | "
+            f"Mean Cell Error: <b>{sherman['erro_medio_celula']:.2f}%</b> | "
+            f"Fit Mode: <b>{sherman.get('modo_ajuste', 'log')}</b>"
+        )
+        story.append(Paragraph(err_msg, st['Caption']))
+    story.append(Spacer(1, 0.3 * cm))
 
     # ── Legend ────────────────────────────────────────────────────────────────
     legend_rows = [

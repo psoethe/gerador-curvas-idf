@@ -24,14 +24,23 @@ import unicodedata
 from calculations import (
     run_full_analysis,
     parse_station_code,
+    parse_ana_file,
+    parse_manual_data,
     obter_serie_chuva_historica,
     listar_estacoes_historicas,
     calcular_distancia_km,
     filtrar_estacoes_por_raio,
     interpolar_series_idw,
+    detectar_isozona_coordenadas,
+    desenhar_pin_mapa_isozonas,
+    verificar_consistencia_fisica_idf,
+    analisar_qualidade_serie,
     UF_PARA_NOME,
     AnaHidroWebService,
     UserError,
+    ISOZONAS,
+    DURATIONS,
+    RETURN_PERIODS,
 )
 from plotting import (
     fig_historical_series,
@@ -444,9 +453,12 @@ UI = {
 
 # ── Estado da sessão ──────────────────────────────────────────────────────────
 def init_state():
-    st.session_state.setdefault('ana_stations', [])   # [{codigo, nome, latitude, longitude, ...}]
-    st.session_state.setdefault('ana_series_text', '')  # série baixada, formato manual
+    st.session_state.setdefault('current_step', 1)       # Stepper linear: 1, 2, 3 ou 4
+    st.session_state.setdefault('ana_stations', [])       # [{codigo, nome, latitude, longitude, ...}]
+    st.session_state.setdefault('ana_series_text', '')    # texto manual ou baixado
+    st.session_state.setdefault('loaded_df', None)        # DataFrame unificado da série histórica
     st.session_state.setdefault('results', None)
+    st.session_state.setdefault('calc_hash', None)        # Hash dos parâmetros no momento do cálculo
     st.session_state.setdefault('report_ctx', {})
     st.session_state.setdefault('proj_lat', -23.0289)
     st.session_state.setdefault('proj_lon', -45.5569)
@@ -455,25 +467,64 @@ def init_state():
     st.session_state.setdefault('search_radius_km', 35)
     st.session_state.setdefault('selection_mode', 'single')  # 'single' ou 'idw'
     st.session_state.setdefault('idw_meta', None)
+    st.session_state.setdefault('idw_p', 2.0)             # Expoente de distância IDW
     st.session_state.setdefault('last_clicked_coords', None)
     st.session_state.setdefault('uf_sel', 'SP')
     st.session_state.setdefault('download_info', None)
+    st.session_state.setdefault('data_source_method', 'api') # 'api', 'csv', 'manual'
+    st.session_state.setdefault('api_source', 'hist')        # 'hist' ou 'tele'
+    st.session_state.setdefault('isozona_escolhida', 'B')
+    st.session_state.setdefault('isozona_origem', 'Automática (detectada no mapa)')
+    st.session_state.setdefault('limiar_cobertura_pct', 90.0)
+    st.session_state.setdefault('excluir_incompletos', False)
+    st.session_state.setdefault('modo_ajuste_sherman', 'log')
+    st.session_state.setdefault('year_start', None)
+    st.session_state.setdefault('year_end', None)
 
 
 init_state()
 
 
-# ── Barra lateral: idioma ─────────────────────────────────────────────────────
+def calcular_hash_inputs(
+    isozona: str,
+    lat: float,
+    lon: float,
+    data_method: str,
+    estacao_str: str,
+    df_series: pd.DataFrame | None,
+    y0: int | None,
+    y1: int | None,
+    limiar_cob: float,
+    excluir_inc: bool,
+    modo_sherman: str,
+    idw_p: float = 2.0,
+) -> str:
+    """Calcula hash SHA-256 dos parâmetros de entrada para detecção de invalidação de estado."""
+    import hashlib
+    s_len = len(df_series) if df_series is not None and not df_series.empty else 0
+    s_sum = 0.0
+    if df_series is not None and not df_series.empty:
+        col_p = 'Precipitacao' if 'Precipitacao' in df_series.columns else df_series.columns[1]
+        try:
+            s_sum = float(pd.to_numeric(df_series[col_p], errors='coerce').sum())
+        except Exception:
+            s_sum = 0.0
+
+    payload = (
+        f"{isozona}|{lat:.4f}|{lon:.4f}|{data_method}|{estacao_str}|"
+        f"{s_len}|{s_sum:.2f}|{y0}|{y1}|{limiar_cob:.1f}|{excluir_inc}|"
+        f"{modo_sherman}|{idw_p:.2f}"
+    )
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+# ── Barra lateral: identificação, idioma e reset ──────────────────────────────
 lang_label = st.sidebar.radio('🌐 Idioma / Language', ['PT 🇧🇷', 'EN 🇺🇸'], horizontal=True)
 lang = lang_label.split()[0]
 L = UI[lang]
 
-st.title(L['title'])
-st.caption(L['subtitle'])
-
 st.sidebar.header(L['sidebar_cfg'])
 
-# ── Identificação ─────────────────────────────────────────────────────────────
 with st.sidebar.expander('🏷️ ' + L['meta'], expanded=True):
     responsavel = st.text_input(L['resp'], value='Pedro Luis Soethe Cursino')
     localizacao = st.text_input(L['loc'], value=st.session_state.proj_loc)
@@ -481,142 +532,60 @@ with st.sidebar.expander('🏷️ ' + L['meta'], expanded=True):
     estacao = st.text_input(L['est'], value=st.session_state.estacao_input)
     st.session_state.estacao_input = estacao
 
-# ── Fonte dos dados ───────────────────────────────────────────────────────────
-st.sidebar.subheader('📂 ' + L['data_src'])
-method = st.sidebar.radio(L['method'], [L['m_csv'], L['m_api'], L['m_manual']])
+st.sidebar.markdown(f"**Versão:** `Soethe·ii / SII·IDF v2.1`")
 
-file_bytes = None
-manual_text = None
+if st.sidebar.button("🔄 " + t('btn_reset_analysis', lang), use_container_width=True):
+    st.session_state.results = None
+    st.session_state.calc_hash = None
+    st.session_state.loaded_df = None
+    st.session_state.ana_series_text = ''
+    st.session_state.download_info = None
+    st.session_state.year_start = None
+    st.session_state.year_end = None
+    st.session_state.current_step = 1
+    st.rerun()
 
-if method == L['m_csv']:
-    up = st.sidebar.file_uploader(L['upload'], type=['csv', 'txt'])
-    if up is not None:
-        file_bytes = up.getvalue()
-        # tenta detectar o código da estação automaticamente
-        try:
-            code = parse_station_code(file_bytes)
-            if code and not estacao:
-                estacao = code
-                st.sidebar.info(f'{L["est"]}: {code}')
-        except Exception:
-            pass
-
-elif method == L['m_manual']:
-    manual_text = st.sidebar.text_area(L['manual_lbl'], height=180, placeholder=L['manual_ph'])
-
-elif method == L['m_api']:
-    fonte = st.sidebar.radio(L['api_fonte'], [L['fonte_hist'], L['fonte_tele']])
-    usar_historica = (fonte == L['fonte_hist'])
-    st.sidebar.caption(L['hint_hist'] if usar_historica else L['api_hint'])
-
-    # Busca de estações por UF disponível nas duas fontes: a histórica usa o
-    # inventário legado (sem login); a telemétrica usa o inventário autenticado.
-    uf = st.sidebar.selectbox(L['api_uf'], sorted(AnaHidroWebService.UFS_BRASIL))
-
-    if st.sidebar.button(L['api_buscar'], use_container_width=True):
-        try:
-            with st.spinner(L['api_buscar']):
-                if usar_historica:
-                    estacoes = listar_estacoes_hist(uf)
-                else:
-                    estacoes = cliente_ana().listar_estacoes_por_uf(uf)
-            if not estacoes:
-                st.sidebar.warning(L['no_stations'])
-            st.session_state.ana_stations = estacoes
-        except UserError as e:
-            st.sidebar.error(str(e))
-        except Exception as e:
-            st.sidebar.error(f'ANA: {e}')
-
-    estacoes = st.session_state.ana_stations
-    if estacoes:
-        rotulos = [f"{e['codigo']} — {e['nome']}" for e in estacoes]
-        escolha = st.sidebar.selectbox(L['api_sel_est'], rotulos)
-        estacao = escolha.split(' — ')[0]
-
-    # Código manual — alternativa direta à busca por UF (opcional em ambas as fontes).
-    cod_manual = st.sidebar.text_input(L['api_cod_manual'], placeholder=L['api_cod_manual_ph'])
-    if cod_manual.strip():
-        estacao = cod_manual.strip()
-
-    if st.sidebar.button(L['api_baixar'], type='primary', use_container_width=True):
-        if not estacao:
-            st.sidebar.warning(L['select_est_first'])
-        else:
-            barra = st.sidebar.progress(0.0)
-            aviso = st.sidebar.empty()
-
-            def _prog(feito, total, ano):
-                barra.progress(feito / total)
-                aviso.caption(f'{ano} ({feito}/{total})')
-
-            try:
-                with st.spinner(L['fetching']):
-                    if usar_historica:
-                        df_baixado = buscar_dataframe_historico(estacao)
-                    else:
-                        cliente_ana()  # valida credenciais (levanta UserError se faltarem)
-                        user_id, _ = ler_credenciais_ana()
-                        df_baixado = buscar_dataframe_ana(
-                            user_id, estacao, 1970, 2025)
-
-                aviso.empty()
-                barra.empty()
-
-                if df_baixado is None or df_baixado.empty:
-                    st.sidebar.warning(f"A estação {estacao} não possui registros de chuva na base da ANA.")
-                else:
-                    valores = df_baixado['Precipitacao'].astype(str).tolist()
-                    anos_disp = sorted(df_baixado['Ano'].dropna().unique().astype(int))
-                    ano_ini, ano_fim = anos_disp[0], anos_disp[-1]
-                    n_anos = len(anos_disp)
-                    msg_anos = f"{n_anos} anos ({ano_ini} a {ano_fim})"
-                    st.session_state.ana_series_text = '\n'.join(valores)
-                    st.session_state.download_info = {
-                        'tipo': 'single', 'cod': estacao, 'nome': '',
-                        'n_anos': n_anos, 'ano_ini': ano_ini, 'ano_fim': ano_fim,
-                    }
-                    st.sidebar.success(f"Série baixada: {msg_anos}.")
-            except UserError as e:
-                st.sidebar.error(str(e))
-            except Exception as e:
-                st.sidebar.error(f'ANA: {e}')
-
-    if st.session_state.ana_series_text:
-        manual_text = st.session_state.ana_series_text
-        st.sidebar.caption(f"{L['series_loaded']}: "
-                           f"{len(manual_text.splitlines())} {L['n_years'].lower()}")
-
-# ── Filtro de período ─────────────────────────────────────────────────────────
-with st.sidebar.expander('🗓️ ' + L['period'], expanded=False):
-    usar_periodo = st.checkbox('Filtrar por período' if lang == 'PT' else 'Filter by period')
-    year_start = year_end = None
-    if usar_periodo:
-        c0, c1 = st.columns(2)
-        year_start = c0.number_input(L['y0'], min_value=1800, max_value=2100, value=1950, step=1)
-        year_end = c1.number_input(L['y1'], min_value=1800, max_value=2100, value=2024, step=1)
-
-# ── Parâmetros da região ──────────────────────────────────────────────────────
-with st.sidebar.expander('🗺️ ' + L['region'], expanded=True):
-    isozona = st.selectbox(L['isozona'], ISOZONAS, index=ISOZONAS.index('B'))
-    c0, c1 = st.columns(2)
-    latitude_sb = c0.number_input(L['lat'], value=float(st.session_state.proj_lat), format='%.4f')
-    longitude_sb = c1.number_input(L['lon'], value=float(st.session_state.proj_lon), format='%.4f')
-    if latitude_sb != st.session_state.proj_lat or longitude_sb != st.session_state.proj_lon:
-        st.session_state.proj_lat = latitude_sb
-        st.session_state.proj_lon = longitude_sb
-
-# ── Botão principal ───────────────────────────────────────────────────────────
-run = st.sidebar.button(L['run'], type='primary', use_container_width=True)
-
-# ── Crédito na barra lateral ──────────────────────────────────────────────────
 st.sidebar.markdown(
     f"<div style='color:#888; font-size:0.8em; padding-top:1rem;'>{L['footer']}</div>",
     unsafe_allow_html=True,
 )
 
+# ── Cabeçalho Principal e Stepper em 4 Etapas ─────────────────────────────────
+st.title(L['title'])
+st.caption(L['subtitle'])
 
-# ── Execução da análise ───────────────────────────────────────────────────────
+curr_s = st.session_state.current_step
+c_s1, c_s2, c_s3, c_s4 = st.columns(4)
+
+with c_s1:
+    btn_type = 'primary' if curr_s == 1 else 'secondary'
+    icon = '📍 ' if curr_s == 1 else ('✅ ' if curr_s > 1 else '1️⃣ ')
+    if st.button(f"{icon}{t('stepper_step1', lang)}", key='nav_s1', use_container_width=True, type=btn_type):
+        st.session_state.current_step = 1
+        st.rerun()
+
+with c_s2:
+    btn_type = 'primary' if curr_s == 2 else 'secondary'
+    icon = '🌧️ ' if curr_s == 2 else ('✅ ' if curr_s > 2 else '2️⃣ ')
+    if st.button(f"{icon}{t('stepper_step2', lang)}", key='nav_s2', use_container_width=True, type=btn_type):
+        st.session_state.current_step = 2
+        st.rerun()
+
+with c_s3:
+    btn_type = 'primary' if curr_s == 3 else 'secondary'
+    icon = '🔍 ' if curr_s == 3 else ('✅ ' if curr_s > 3 else '3️⃣ ')
+    if st.button(f"{icon}{t('stepper_step3', lang)}", key='nav_s3', use_container_width=True, type=btn_type):
+        st.session_state.current_step = 3
+        st.rerun()
+
+with c_s4:
+    btn_type = 'primary' if curr_s == 4 else 'secondary'
+    icon = '📊 ' if curr_s == 4 else '4️⃣ '
+    if st.button(f"{icon}{t('stepper_step4', lang)}", key='nav_s4', use_container_width=True, type=btn_type):
+        st.session_state.current_step = 4
+        st.rerun()
+
+st.divider()
 def figuras(results):
     return (
         fig_historical_series(results['series_df'], lang),
@@ -627,135 +596,119 @@ def figuras(results):
     )
 
 
-if run:
-    try:
-        with st.spinner(L['run']):
-            results = run_full_analysis(
-                file_bytes=file_bytes,
-                manual_text=manual_text,
-                isozona=isozona,
-                lang=lang,
-                year_start=int(year_start) if year_start else None,
-                year_end=int(year_end) if year_end else None,
-            )
-        st.session_state.results = results
-        st.session_state.report_ctx = {
-            'responsavel': responsavel,
-            'localizacao': localizacao,
-            'estacao': estacao or '—',
-            'lang': lang,
-            'coords': (float(st.session_state.proj_lat), float(st.session_state.proj_lon)),
-            'idw_meta': st.session_state.idw_meta,
-        }
-    except UserError as e:
-        st.error(str(e))
-        st.session_state.results = None
-    except Exception as e:
-        st.error(f'Erro na análise: {e}')
-        st.session_state.results = None
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# MÓDULO GEOESPACIAL: MAPA INTERATIVO, RAIO DE BUSCA E INTERPOLAÇÃO IDW
+# NAVEGAÇÃO LINEAR DO WORKFLOW EM 4 ETAPAS (STEPPER)
 # ══════════════════════════════════════════════════════════════════════════════
-if method == L['m_api']:
-    with st.expander(L['map_title'], expanded=True):
-        # 1. Campo de busca por endereço com st.form (permite submissão com tecla ENTER)
-        with st.form("form_busca_endereco", clear_on_submit=False):
-            c_search, c_btn = st.columns([4, 1])
-            endereco_digitado = c_search.text_input(
-                L['search_addr_label'],
-                value='',
-                placeholder=L['search_addr_ph'],
-                label_visibility='collapsed',
-            )
-            submitted = c_btn.form_submit_button(L['btn_search_addr'], use_container_width=True)
 
-        if submitted and endereco_digitado.strip():
-            with st.spinner("Buscando localização..."):
-                res_geo = geocodificar_local(endereco_digitado)
-                if res_geo:
-                    lat_f, lon_f, addr_f = res_geo
-                    st.session_state.proj_lat = round(lat_f, 4)
-                    st.session_state.proj_lon = round(lon_f, 4)
-                    nova_uf, novo_loc = detectar_uf_coordenadas(lat_f, lon_f)
-                    st.session_state.uf_sel = nova_uf
-                    st.session_state.proj_loc = (
-                        endereco_digitado.strip() + (f" - {nova_uf}" if nova_uf not in endereco_digitado else "")
-                    )
-                    st.success(f"📍 {addr_f} (Estado detectado: **{nova_uf}**)")
-                    st.rerun()
-                else:
-                    st.warning("Endereço não localizado. Tente digitar o nome da cidade e estado (ex.: Recife, PE ou Taubaté, SP).")
+# ──────────────────────────────────────────────────────────────────────────────
+# ETAPA 1: 📍 Localização do Projeto e Isozona
+# ──────────────────────────────────────────────────────────────────────────────
+if curr_s == 1:
+    st.subheader(f"📍 {t('stepper_step1', lang)}")
+    st.caption(
+        "Busque o endereço ou município do projeto, ajuste as coordenadas e o raio de busca no mapa, e confirme a Isozona de Taborga detectada."
+        if lang == 'PT'
+        else "Search for project address or municipality, adjust coordinates and radius on map, and confirm detected Taborga Isozone."
+    )
 
-        # 2. Controles de Coordenadas, Raio, UF e Botão para Fixar Pin
-        c_lat, c_lon, c_raio, c_uf, c_pin = st.columns([2, 2, 2.5, 2, 1.5])
-        lat_val = c_lat.number_input(L['lat'], value=float(st.session_state.proj_lat), format="%.4f", step=0.01)
-        lon_val = c_lon.number_input(L['lon'], value=float(st.session_state.proj_lon), format="%.4f", step=0.01)
-        if lat_val != st.session_state.proj_lat or lon_val != st.session_state.proj_lon:
-            st.session_state.proj_lat = lat_val
-            st.session_state.proj_lon = lon_val
-            nova_uf, novo_loc = detectar_uf_coordenadas(lat_val, lon_val)
-            st.session_state.uf_sel = nova_uf
-            st.session_state.proj_loc = novo_loc
-            st.rerun()
-
-        raio_km = c_raio.slider(
-            L['radius_label'],
-            min_value=5,
-            max_value=150,
-            value=int(st.session_state.search_radius_km),
-            step=5,
+    # 1. Campo de busca por endereço com st.form (ENTER submete)
+    with st.form("form_busca_endereco", clear_on_submit=False):
+        c_search, c_btn = st.columns([4, 1])
+        endereco_digitado = c_search.text_input(
+            L['search_addr_label'],
+            value='',
+            placeholder=L['search_addr_ph'],
+            label_visibility='collapsed',
         )
-        if raio_km != st.session_state.search_radius_km:
-            st.session_state.search_radius_km = raio_km
+        submitted = c_btn.form_submit_button(L['btn_search_addr'], use_container_width=True)
 
-        ufs_ordenadas = sorted(AnaHidroWebService.UFS_BRASIL)
-        uf_atual = st.session_state.uf_sel
-        idx_uf = ufs_ordenadas.index(uf_atual) if uf_atual in ufs_ordenadas else 0
-        uf_escolhida = c_uf.selectbox("UF do Inventário ANA", ufs_ordenadas, index=idx_uf)
-        if uf_escolhida != uf_atual:
-            st.session_state.uf_sel = uf_escolhida
-            st.rerun()
+    if submitted and endereco_digitado.strip():
+        with st.spinner("Buscando localização..."):
+            res_geo = geocodificar_local(endereco_digitado)
+            if res_geo:
+                lat_f, lon_f, addr_f = res_geo
+                st.session_state.proj_lat = round(lat_f, 4)
+                st.session_state.proj_lon = round(lon_f, 4)
+                nova_uf, novo_loc = detectar_uf_coordenadas(lat_f, lon_f)
+                st.session_state.uf_sel = nova_uf
+                st.session_state.proj_loc = (
+                    endereco_digitado.strip() + (f" - {nova_uf}" if nova_uf not in endereco_digitado else "")
+                )
+                iso_det = detectar_isozona_coordenadas(lat_f, lon_f)
+                st.session_state.isozona_escolhida = iso_det
+                st.session_state.isozona_origem = f"Automática ({iso_det})"
+                st.success(f"📍 {addr_f} (UF: **{nova_uf}** | Isozona: **{iso_det}**)")
+                st.rerun()
+            else:
+                st.warning("Endereço não localizado. Tente digitar o nome da cidade e estado (ex.: Recife, PE ou Taubaté, SP).")
 
-        if c_pin.button("📍 Fixar Pin", use_container_width=True, help="Centraliza o pin no mapa e atualiza a busca"):
-            st.rerun()
+    # 2. Controles de Coordenadas, Raio, UF e Botão para Fixar Pin
+    c_lat, c_lon, c_raio, c_uf, c_pin = st.columns([2, 2, 2.5, 2, 1.5])
+    lat_val = c_lat.number_input(L['lat'], value=float(st.session_state.proj_lat), format="%.4f", step=0.01)
+    lon_val = c_lon.number_input(L['lon'], value=float(st.session_state.proj_lon), format="%.4f", step=0.01)
+    if lat_val != st.session_state.proj_lat or lon_val != st.session_state.proj_lon:
+        st.session_state.proj_lat = lat_val
+        st.session_state.proj_lon = lon_val
+        nova_uf, novo_loc = detectar_uf_coordenadas(lat_val, lon_val)
+        st.session_state.uf_sel = nova_uf
+        st.session_state.proj_loc = novo_loc
+        iso_det = detectar_isozona_coordenadas(lat_val, lon_val)
+        st.session_state.isozona_escolhida = iso_det
+        st.session_state.isozona_origem = f"Automática ({iso_det})"
+        st.rerun()
 
-        # 3. Carregamento do Inventário da UF selecionada
+    raio_km = c_raio.slider(
+        L['radius_label'],
+        min_value=5,
+        max_value=150,
+        value=int(st.session_state.search_radius_km),
+        step=5,
+    )
+    if raio_km != st.session_state.search_radius_km:
+        st.session_state.search_radius_km = raio_km
+
+    ufs_ordenadas = sorted(AnaHidroWebService.UFS_BRASIL)
+    uf_atual = st.session_state.uf_sel
+    idx_uf = ufs_ordenadas.index(uf_atual) if uf_atual in ufs_ordenadas else 0
+    uf_escolhida = c_uf.selectbox("UF do Inventário ANA", ufs_ordenadas, index=idx_uf)
+    if uf_escolhida != uf_atual:
+        st.session_state.uf_sel = uf_escolhida
+        st.rerun()
+
+    if c_pin.button("📍 Fixar Pin", use_container_width=True, help="Centraliza o pin no mapa e atualiza a busca"):
+        st.rerun()
+
+    st.markdown(
+        f"📍 **Local do Projeto:** Lat `{st.session_state.proj_lat:.4f}` | "
+        f"Lon `{st.session_state.proj_lon:.4f}` — *{st.session_state.proj_loc}* "
+        f"(Inventário da ANA: **{st.session_state.uf_sel}**)"
+    )
+
+    # 3. Colunas: Mapa Folium Interativo (esquerda) e Mapa Oficial de Isozonas (direita)
+    col_mapa, col_isozona = st.columns([1.15, 0.85])
+
+    with col_mapa:
+        st.markdown("**🗺️ Mapa de Localização e Estações Pluviométricas**")
         with st.spinner(f"Carregando inventário de estações da ANA ({st.session_state.uf_sel})..."):
             try:
-                if usar_historica:
-                    estacoes_uf = listar_estacoes_hist(st.session_state.uf_sel)
-                else:
-                    estacoes_uf = cliente_ana().listar_estacoes_por_uf(st.session_state.uf_sel)
-            except Exception as exc:
-                st.error(f"Falha ao obter inventário da ANA: {exc}")
+                estacoes_uf = listar_estacoes_hist(st.session_state.uf_sel)
+            except Exception:
                 estacoes_uf = []
 
-        # 4. Filtragem das estações no raio especificado (ordenadas por distância crescente)
         estacoes_no_raio = filtrar_estacoes_por_raio(
             st.session_state.proj_lat,
             st.session_state.proj_lon,
             estacoes_uf,
             raio_km=st.session_state.search_radius_km,
         )
+        st.session_state.ana_stations = estacoes_no_raio
 
-        # Informação visual do ponto de projeto
-        st.markdown(
-            f"📍 **Local do Projeto:** Lat `{st.session_state.proj_lat:.4f}` | "
-            f"Lon `{st.session_state.proj_lon:.4f}` — *{st.session_state.proj_loc}* "
-            f"(Inventário da ANA: **{st.session_state.uf_sel}**)"
-        )
-
-        # 5. Renderização do Mapa com Folium (Ferramenta de Pin, Camadas compactas, Zoom e Escala)
         m = folium.Map(
             location=[st.session_state.proj_lat, st.session_state.proj_lon],
             zoom_start=10,
             tiles=None,
             control_scale=True,
         )
-
-        # Camadas base selecionáveis pelo usuário
         folium.TileLayer('OpenStreetMap', name='🗺️ Padrão (OSM)').add_to(m)
         folium.TileLayer('CartoDB positron', name='⚪ Claro (Positron)').add_to(m)
         folium.TileLayer('CartoDB dark_matter', name='⚫ Escuro (Dark)').add_to(m)
@@ -770,7 +723,6 @@ if method == L['m_api']:
             name='⛰️ Relevo (Topo)',
         ).add_to(m)
 
-        # Ferramentas: Tela Cheia e Controle de Desenho com Botão de Pin
         Fullscreen(position='topleft').add_to(m)
         Draw(
             export=False,
@@ -786,7 +738,6 @@ if method == L['m_api']:
             edit_options={'edit': False, 'remove': False},
         ).add_to(m)
 
-        # Controle de Camadas com escala 50% menor aplicada via CSS
         folium.LayerControl(position='topright', collapsed=False).add_to(m)
         css_layers_compact = """
         <style>
@@ -807,15 +758,13 @@ if method == L['m_api']:
         """
         m.get_root().html.add_child(folium.Element(css_layers_compact))
 
-        # Marcador Vermelho: Local do Projeto
         folium.Marker(
             [st.session_state.proj_lat, st.session_state.proj_lon],
             popup=f"<b>📍 Local do Projeto</b><br>Lat: {st.session_state.proj_lat:.4f}<br>Lon: {st.session_state.proj_lon:.4f}<br>{st.session_state.proj_loc}",
-            tooltip="📍 Local do Projeto (Clique no botão de marcador ou em qualquer ponto do mapa para reposicionar)",
+            tooltip="📍 Local do Projeto",
             icon=folium.Icon(color='red', icon='info-sign'),
         ).add_to(m)
 
-        # Círculo Azul de Raio (Buffer em metros)
         folium.Circle(
             location=[st.session_state.proj_lat, st.session_state.proj_lon],
             radius=st.session_state.search_radius_km * 1000,
@@ -827,14 +776,12 @@ if method == L['m_api']:
             tooltip=f"Raio de busca: {st.session_state.search_radius_km} km",
         ).add_to(m)
 
-        # Marcadores das Estações: A mais próxima em AZUL com estrela, as demais em VERDE
         for idx, est in enumerate(estacoes_no_raio):
             is_closest = (idx == 0)
             dist_km = est['distancia_km']
             cod = est['codigo']
             nome = est['nome']
             mun = est.get('municipio', '')
-
             if is_closest:
                 pop_html = f"""
                 <div style='font-family:sans-serif; min-width:190px;'>
@@ -867,10 +814,9 @@ if method == L['m_api']:
                     icon=folium.Icon(color='green', icon='tint'),
                 ).add_to(m)
 
-        st.caption("💡 Dica: Clique no botão 📍 no canto superior esquerdo do mapa ou clique em qualquer ponto para reposicionar o pin do projeto.")
-        map_out = st_folium(m, height=450, use_container_width=True, returned_objects=["last_clicked", "last_active_drawing"])
+        st.caption("💡 Dica: Clique no botão 📍 no canto superior esquerdo ou em qualquer ponto do mapa para reposicionar o projeto.")
+        map_out = st_folium(m, height=460, use_container_width=True, returned_objects=["last_clicked", "last_active_drawing"])
 
-        # Detecta clique no mapa ou posicionamento de marcador via Draw
         novo_ponto = None
         if map_out and map_out.get("last_active_drawing"):
             geom = map_out["last_active_drawing"].get("geometry", {})
@@ -887,36 +833,107 @@ if method == L['m_api']:
             c_lat, c_lon = novo_ponto
             st.session_state.proj_lat = c_lat
             st.session_state.proj_lon = c_lon
-
-            # Identifica a UF e localização imediatamente
             nova_uf, novo_loc = detectar_uf_coordenadas(c_lat, c_lon)
             st.session_state.uf_sel = nova_uf
             st.session_state.proj_loc = novo_loc
+            iso_det = detectar_isozona_coordenadas(c_lat, c_lon)
+            st.session_state.isozona_escolhida = iso_det
+            st.session_state.isozona_origem = f"Automática ({iso_det})"
             st.rerun()
 
-        # Banner de feedback dos dados baixados (mostra anos disponíveis e intervalo)
-        if st.session_state.get('download_info'):
-            dinfo = st.session_state.download_info
-            if dinfo.get('tipo') == 'idw':
-                st.success(
-                    f"✅ **Série sintética IDW gerada com sucesso!**\n\n"
-                    f"- **Estações combinadas:** {dinfo['n_est']}\n"
-                    f"- **Período disponível na ANA:** **{dinfo['ano_ini']} a {dinfo['ano_fim']}** ({dinfo['n_anos']} anos com dados)\n"
-                    f"- 💡 *Dica:* Toda a base histórica disponível foi baixada. Caso deseje restringir o período de cálculo (ex.: últimos 30 anos), utilize o **'🗓️ Filtro de Período'** na barra lateral."
-                )
-            else:
-                st.success(
-                    f"✅ **Série histórica completa baixada com sucesso!**\n\n"
-                    f"- **Estação:** `{dinfo['cod']}` — {dinfo.get('nome', '')}\n"
-                    f"- **Período disponível na ANA:** **{dinfo['ano_ini']} a {dinfo['ano_fim']}** ({dinfo['n_anos']} anos com dados)\n"
-                    f"- 💡 *Dica:* Toda a base histórica disponível foi baixada. Caso deseje restringir o período de cálculo (ex.: últimos 30 anos), utilize o **'🗓️ Filtro de Período'** na barra lateral."
-                )
+    with col_isozona:
+        st.markdown(f"**🗺️ {t('isozona_label', lang)}**")
+        img_pin = desenhar_pin_mapa_isozonas(st.session_state.proj_lat, st.session_state.proj_lon)
+        if img_pin is not None:
+            st.image(img_pin, caption="Mapa Oficial de Isozonas de Chuvas Intensas do Brasil (Taborga, 1974)", use_container_width=True)
 
-        # 6. Seleção de Estações (Mais Próxima vs. Interpolação IDW)
+        iso_det = detectar_isozona_coordenadas(st.session_state.proj_lat, st.session_state.proj_lon)
+        idx_padrao = ISOZONAS.index(st.session_state.isozona_escolhida) if st.session_state.isozona_escolhida in ISOZONAS else (ISOZONAS.index(iso_det) if iso_det in ISOZONAS else 1)
+        iso_sel = st.selectbox(f"{t('isozona_label', lang)} (A a H)", ISOZONAS, index=idx_padrao)
+        if iso_sel != iso_det:
+            st.caption(f"✏️ **{t('isozona_manual_badge', lang).format(iso_sel)}**")
+            st.session_state.isozona_origem = f"Manual ({iso_sel}) - Sobrescrita"
+        else:
+            st.caption(f"🎯 **{t('isozona_auto_badge', lang).format(iso_det)}**")
+            st.session_state.isozona_origem = f"Automática ({iso_det})"
+        st.session_state.isozona_escolhida = iso_sel
+
+    st.divider()
+    if st.button(t('btn_confirm_loc', lang), type='primary', use_container_width=True):
+        st.session_state.current_step = 2
+        st.rerun()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ETAPA 2: 🌧️ Dados Pluviométricos
+# ──────────────────────────────────────────────────────────────────────────────
+elif curr_s == 2:
+    st.subheader(f"🌧️ {t('stepper_step2', lang)}")
+
+    with st.container(border=True):
+        c_r1, c_r2 = st.columns([3, 1])
+        c_r1.markdown(
+            f"📍 **Local:** {st.session_state.proj_loc} (`{st.session_state.proj_lat:.4f}`, `{st.session_state.proj_lon:.4f}`) | "
+            f"**Raio:** {st.session_state.search_radius_km} km | "
+            f"**Isozona:** {st.session_state.isozona_escolhida} (*{st.session_state.isozona_origem}*)"
+        )
+        if c_r2.button("✏️ Alterar Localização", use_container_width=True):
+            st.session_state.current_step = 1
+            st.rerun()
+
+    metodo = st.radio(
+        L['method'],
+        [L['m_api'], L['m_csv'], L['m_manual']],
+        horizontal=True,
+        index=0 if st.session_state.data_source_method == 'api' else (1 if st.session_state.data_source_method == 'csv' else 2),
+    )
+    st.session_state.data_source_method = 'api' if metodo == L['m_api'] else ('csv' if metodo == L['m_csv'] else 'manual')
+
+    if st.session_state.data_source_method == 'api':
+        c_f1, c_f2 = st.columns([1.5, 2.5])
+        fonte_escolhida = c_f1.radio(
+            L['api_fonte'],
+            [L['fonte_hist'], L['fonte_tele']],
+            horizontal=True,
+            index=0 if st.session_state.api_source == 'hist' else 1,
+        )
+        st.session_state.api_source = 'hist' if fonte_escolhida == L['fonte_hist'] else 'tele'
+        usar_historica = (st.session_state.api_source == 'hist')
+        c_f2.caption(L['hint_hist'] if usar_historica else L['api_hint'])
+
+        with st.spinner(f"Carregando inventário de estações da ANA ({st.session_state.uf_sel})..."):
+            try:
+                if usar_historica:
+                    estacoes_uf = listar_estacoes_hist(st.session_state.uf_sel)
+                else:
+                    estacoes_uf = cliente_ana().listar_estacoes_por_uf(st.session_state.uf_sel)
+            except Exception as exc:
+                st.error(f"Falha ao obter inventário da ANA: {exc}")
+                estacoes_uf = []
+
+        estacoes_no_raio = filtrar_estacoes_por_raio(
+            st.session_state.proj_lat,
+            st.session_state.proj_lon,
+            estacoes_uf,
+            raio_km=st.session_state.search_radius_km,
+        )
+
         if not estacoes_no_raio:
             st.warning(L['no_stations_radius'].format(r=st.session_state.search_radius_km))
         else:
             st.info(L['stations_found_count'].format(n=len(estacoes_no_raio), r=st.session_state.search_radius_km))
+
+            df_tbl_est = pd.DataFrame([{
+                'Código': e['codigo'],
+                'Nome': e['nome'],
+                'Município': e.get('municipio', '—'),
+                'Operadora': e.get('operadora', '—'),
+                'Alt. (m)': e.get('altitude', '—'),
+                'Período': e.get('periodo_operacao', '—'),
+                'Anos': e.get('anos_operacao', '—'),
+                'Status': '🟢 Ativa' if e.get('status_operando') else '⚪ Inativa',
+                'Distância (km)': f"{e['distancia_km']:.2f}",
+            } for e in estacoes_no_raio])
+            st.dataframe(df_tbl_est, use_container_width=True, hide_index=True)
 
             modo = st.radio(
                 L['mode_label'],
@@ -925,43 +942,6 @@ if method == L['m_api']:
                 index=0 if st.session_state.selection_mode == 'single' else 1,
             )
             st.session_state.selection_mode = 'single' if modo == L['mode_single'] else 'idw'
-
-            # ── Metodologia IDW (Fonte ~30% menor) ──────────────────────────────────
-            if st.session_state.selection_mode == 'idw':
-                with st.container(border=True):
-                    st.markdown(
-                        """
-                        <div style="font-size: 0.72rem; line-height: 1.4; color: #333;">
-                            <div style="font-weight: bold; font-size: 0.85rem; margin-bottom: 6px; color: #1a5276;">
-                                📐 Metodologia de Interpolação Multi-estação (IDW — Inverse Distance Weighting)
-                            </div>
-                            <p style="margin-bottom: 6px;">
-                                O método da <b>Ponderação pelo Inverso da Distância (IDW)</b> estima chuvas pontuais a partir das estações vizinhas adotando o inverso do quadrado da distância:
-                            </p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    st.latex(r"w_i = \frac{1 / d_i^2}{\sum_{k=1}^m \frac{1}{d_k^2}}")
-                    st.markdown(
-                        r"""
-                        <div style="font-size: 0.72rem; line-height: 1.4; color: #333;">
-                            <b>Onde:</b>
-                            <ul style="margin-top: 2px; margin-bottom: 6px; padding-left: 18px;">
-                                <li><b>d<sub>i</sub>:</b> distância geodésica da estação <i>i</i> até o ponto do projeto (km).</li>
-                                <li><b>p:</b> expoente da distância adotado (<i>p = 2</i>, inverso do quadrado).</li>
-                                <li><b>w<sub>i</sub>:</b> peso relativo ponderado da estação (\(\sum w_i = 100\%\)).</li>
-                            </ul>
-                            <b>Procedimento Hidrológico:</b>
-                            <ol style="margin-top: 2px; margin-bottom: 4px; padding-left: 18px;">
-                                <li><b>Ponderação Ano a Ano:</b> Para cada ano civil das séries históricas, a precipitação máxima anual no ponto do projeto é estimada pela soma ponderada: \(P_{\text{proj}}(t) = \sum w_i^*(t) \cdot P_i(t)\).</li>
-                                <li><b>Re-normalização Dinâmica:</b> Se uma estação não operou em determinado ano civil, os pesos \(w_i^*(t)\) são re-normalizados automaticamente entre as estações ativas remanescentes.</li>
-                                <li><b>Série Sintética Local:</b> A série ponderada resultante reflete as precipitações na coordenada exata da obra e alimenta o ajuste de Gumbel, Taborga e a equação de Sherman.</li>
-                            </ol>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
 
             if st.session_state.selection_mode == 'single':
                 opcoes_est = [
@@ -985,12 +965,13 @@ if method == L['m_api']:
                         if df_baixado is None or df_baixado.empty:
                             st.warning(f"A estação {cod_sel} não possui registros de chuva na base da ANA. Selecione outra estação no raio.")
                         else:
-                            anos_disp = sorted(df_baixado['Ano'].dropna().unique().astype(int))
-                            ano_ini = anos_disp[0]
-                            ano_fim = anos_disp[-1]
-                            n_anos = len(anos_disp)
+                            col_ano = 'Ano' if 'Ano' in df_baixado.columns else t('col_ano', lang)
+                            anos_disp = sorted(df_baixado[col_ano].dropna().unique().astype(int))
+                            ano_ini, ano_fim, n_anos = anos_disp[0], anos_disp[-1], len(anos_disp)
 
-                            st.session_state.ana_series_text = '\n'.join(df_baixado['Precipitacao'].astype(str).tolist())
+                            st.session_state.loaded_df = df_baixado
+                            col_p = 'Precipitacao' if 'Precipitacao' in df_baixado.columns else t('col_precip', lang)
+                            st.session_state.ana_series_text = '\n'.join(df_baixado[col_p].astype(str).tolist())
                             st.session_state.estacao_input = f"{cod_sel} ({est_obj['nome']})"
                             st.session_state.idw_meta = None
                             st.session_state.download_info = {
@@ -1008,7 +989,51 @@ if method == L['m_api']:
                         st.error(f'ANA: {e}')
 
             else:
-                # Modo IDW: Multiselect de estações + cálculo de pesos em tempo real
+                with st.container(border=True):
+                    st.markdown(
+                        """
+                        <div style="font-size: 0.72rem; line-height: 1.4; color: #333;">
+                            <div style="font-weight: bold; font-size: 0.85rem; margin-bottom: 6px; color: #1a5276;">
+                                📐 Metodologia de Interpolação Multi-estação (IDW — Inverse Distance Weighting)
+                            </div>
+                            <p style="margin-bottom: 6px;">
+                                O método da <b>Ponderação pelo Inverso da Distância (IDW)</b> estima chuvas pontuais a partir das estações vizinhas adotando o inverso da distância elevado a uma potência <i>p</i>:
+                            </p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    st.latex(r"w_i = \frac{1 / d_i^p}{\sum_{k=1}^m \frac{1}{d_k^p}}")
+                    st.markdown(
+                        r"""
+                        <div style="font-size: 0.72rem; line-height: 1.4; color: #333;">
+                            <b>Onde:</b>
+                            <ul style="margin-top: 2px; margin-bottom: 6px; padding-left: 18px;">
+                                <li><b>d<sub>i</sub>:</b> distância geodésica da estação <i>i</i> até o ponto do projeto (km).</li>
+                                <li><b>p:</b> expoente da distância configurável (padrão <i>p = 2</i>, inverso do quadrado).</li>
+                                <li><b>w<sub>i</sub>:</b> peso ponderado da estação (\(\sum w_i = 100\%\)).</li>
+                            </ul>
+                            <b>Procedimento Hidrológico:</b>
+                            <ol style="margin-top: 2px; margin-bottom: 4px; padding-left: 18px;">
+                                <li><b>Ponderação Ano a Ano:</b> Para cada ano civil coincidente das séries históricas, a precipitação máxima anual no ponto do projeto é estimada pela soma ponderada: \(P_{\text{proj}}(t) = \sum w_i^*(t) \cdot P_i(t)\).</li>
+                                <li><b>Re-normalização Dinâmica:</b> Se uma estação não operou em determinado ano civil, os pesos \(w_i^*(t)\) são re-normalizados automaticamente entre as estações ativas remanescentes.</li>
+                                <li><b>Série Sintética Local:</b> A série ponderada resultante reflete as precipitações na coordenada exata da obra e alimenta o ajuste de Gumbel, Taborga e Sherman.</li>
+                            </ol>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                idw_p = st.slider(
+                    "Expoente de distância (p):",
+                    min_value=1.0,
+                    max_value=4.0,
+                    value=float(st.session_state.idw_p),
+                    step=0.5,
+                    help="O expoente padrão p=2 corresponde ao inverso do quadrado da distância.",
+                )
+                st.session_state.idw_p = idw_p
+
                 mapa_opcoes = {
                     f"{'⭐ ' if i == 0 else ''}{e['codigo']} — {e['nome']} ({e['distancia_km']:.1f} km)": e
                     for i, e in enumerate(estacoes_no_raio)
@@ -1025,21 +1050,32 @@ if method == L['m_api']:
                     estacoes_sel = [mapa_opcoes[k] for k in selecionadas_keys]
                     dists_map = {e['codigo']: e['distancia_km'] for e in estacoes_sel}
 
-                    # Calcula pesos IDW nominais para visualização na tabela
-                    invs = {c: (1.0 / max(d, 0.1)) ** 2 for c, d in dists_map.items()}
+                    invs = {c: (1.0 / max(d, 0.1)) ** idw_p for c, d in dists_map.items()}
                     soma_inv = sum(invs.values())
                     pesos_preview = {c: round((invs[c] / soma_inv) * 100.0, 1) for c in dists_map}
+                    sum_sq_w = sum((w / 100.0) ** 2 for w in pesos_preview.values())
+                    n_eff_preview = round(1.0 / sum_sq_w, 2) if sum_sq_w > 0 else 1.0
 
                     df_preview_idw = pd.DataFrame([
                         {
                             L['geo_station_code']: e['codigo'],
                             L['geo_station_name']: e['nome'],
+                            'Operadora': e.get('operadora', '—'),
+                            'Alt. (m)': e.get('altitude', '—'),
                             L['geo_distance_km']: f"{e['distancia_km']:.2f} km",
                             L['geo_weight_pct']: f"{pesos_preview[e['codigo']]:.1f}%",
                         }
                         for e in estacoes_sel
                     ])
                     st.dataframe(df_preview_idw, use_container_width=True, hide_index=True)
+                    st.caption(f"**{t('idw_neff_label', lang)}:** `{n_eff_preview}`")
+
+                    for c_cod, w_val in pesos_preview.items():
+                        if w_val < 2.0:
+                            st.warning(t('idw_weight_alert', lang).format(c_cod, w_val))
+                    dists_list = list(dists_map.values())
+                    if len(dists_list) > 1 and max(dists_list) - min(dists_list) < 2.0 and min(dists_list) < 3.0:
+                        st.info(t('idw_colocated_alert', lang))
 
                     if st.button(L['btn_download_idw'], type='primary', use_container_width=True):
                         try:
@@ -1078,18 +1114,19 @@ if method == L['m_api']:
                             if not series_dict:
                                 st.warning("Nenhuma das estações selecionadas possui registros de chuva na base da ANA. Selecione outras estações no raio.")
                             else:
-                                # Interpola via IDW normalmente com as estações válidas
-                                df_interp, pesos_finais = interpolar_series_idw(series_dict, dists_map, p=2.0)
-                                anos_disp = sorted(df_interp['Ano'].dropna().unique().astype(int))
-                                ano_ini = anos_disp[0]
-                                ano_fim = anos_disp[-1]
-                                n_anos = len(anos_disp)
+                                df_interp, pesos_finais, n_eff_val, avisos_idw = interpolar_series_idw(
+                                    series_dict, dists_map, p=idw_p, lang=lang
+                                )
+                                col_ano = 'Ano' if 'Ano' in df_interp.columns else t('col_ano', lang)
+                                anos_disp = sorted(df_interp[col_ano].dropna().unique().astype(int))
+                                ano_ini, ano_fim, n_anos = anos_disp[0], anos_disp[-1], len(anos_disp)
 
-                                st.session_state.ana_series_text = '\n'.join(df_interp['Precipitacao'].astype(str).tolist())
+                                st.session_state.loaded_df = df_interp
+                                col_p = 'Precipitacao' if 'Precipitacao' in df_interp.columns else t('col_precip', lang)
+                                st.session_state.ana_series_text = '\n'.join(df_interp[col_p].astype(str).tolist())
                                 codigos_str = ', '.join(series_dict.keys())
                                 st.session_state.estacao_input = f"IDW ({codigos_str})"
 
-                                # Metadados de IDW para os relatórios
                                 st.session_state.idw_meta = {
                                     'stations': [
                                         {
@@ -1097,10 +1134,14 @@ if method == L['m_api']:
                                             'nome': e['nome'],
                                             'distancia_km': e['distancia_km'],
                                             'peso_pct': pesos_finais.get(e['codigo'], 0.0) * 100.0,
+                                            'operadora': e.get('operadora', '—'),
+                                            'altitude': e.get('altitude', '—'),
                                         }
                                         for e in estacoes_sel if e['codigo'] in series_dict
                                     ],
                                     'coords': (st.session_state.proj_lat, st.session_state.proj_lon),
+                                    'p': idw_p,
+                                    'n_eff': n_eff_val,
                                 }
                                 st.session_state.download_info = {
                                     'tipo': 'idw',
@@ -1115,96 +1156,390 @@ if method == L['m_api']:
                         except Exception as e:
                             st.error(f'Erro no download/interpolação IDW: {e}')
 
+    elif st.session_state.data_source_method == 'csv':
+        up_file = st.file_uploader(L['upload'], type=['csv', 'txt'])
+        if up_file is not None:
+            try:
+                df_up = parse_ana_file(up_file.getvalue(), lang=lang)
+                st.session_state.loaded_df = df_up
+                col_p = 'Precipitacao' if 'Precipitacao' in df_up.columns else t('col_precip', lang)
+                st.session_state.ana_series_text = '\n'.join(df_up[col_p].astype(str).tolist())
+                col_ano = 'Ano' if 'Ano' in df_up.columns else t('col_ano', lang)
+                anos = sorted(df_up[col_ano].dropna().unique().astype(int))
+                st.session_state.download_info = {
+                    'tipo': 'csv',
+                    'n_anos': len(anos),
+                    'ano_ini': anos[0],
+                    'ano_fim': anos[-1],
+                }
+                st.success(f"Arquivo carregado com sucesso: {len(anos)} anos ({anos[0]} a {anos[-1]}).")
+            except Exception as e:
+                st.error(f"Erro ao processar arquivo: {e}")
 
-# ── Apresentação dos resultados ───────────────────────────────────────────────
-results = st.session_state.results
+    else:
+        manual_in = st.text_area(
+            L['manual_lbl'],
+            value=st.session_state.ana_series_text,
+            placeholder=L['manual_ph'],
+            height=160,
+        )
+        if st.button("Confirmar Dados Manuais", type='primary', use_container_width=True):
+            if manual_in.strip():
+                try:
+                    df_man = parse_manual_data(manual_in, lang=lang)
+                    st.session_state.loaded_df = df_man
+                    st.session_state.ana_series_text = manual_in
+                    col_ano = 'Ano' if 'Ano' in df_man.columns else t('col_ano', lang)
+                    anos = sorted(df_man[col_ano].dropna().unique().astype(int))
+                    st.session_state.download_info = {
+                        'tipo': 'manual',
+                        'n_anos': len(anos),
+                        'ano_ini': anos[0],
+                        'ano_fim': anos[-1],
+                    }
+                    st.success(f"Dados manuais carregados: {len(anos)} valores.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao processar dados manuais: {e}")
 
-if not results:
-    st.info(L['no_data_yet'])
-else:
-    fh, fg, fp, fi = figuras(results)
+    if st.session_state.loaded_df is not None and not st.session_state.loaded_df.empty:
+        df_cur = st.session_state.loaded_df
+        col_ano = 'Ano' if 'Ano' in df_cur.columns else t('col_ano', lang)
+        anos = sorted(df_cur[col_ano].dropna().unique().astype(int))
+        st.success(f"✅ **Série pluviométrica pronta!** {len(anos)} anos disponíveis ({anos[0]} a {anos[-1]}).")
+        with st.expander("👁️ Visualizar Prévia da Série Carregada", expanded=False):
+            st.dataframe(df_cur, height=220, use_container_width=True, hide_index=True)
 
-    sherman = results['sherman_params']
-    n = results['n_samples']
-    m1, m2, m3 = st.columns(3)
-    m1.metric(L['n_years'], n)
-    m2.metric('μ (Gumbel)', f"{results['mu']:.2f}")
-    m3.metric('σ (Gumbel)', f"{results['sigma']:.2f}")
+        st.divider()
+        if st.button("Avançar para Diagnóstico e Parâmetros ➡️", type='primary', use_container_width=True):
+            st.session_state.current_step = 3
+            st.rerun()
+    else:
+        st.info("Baixe a série da ANA acima ou carregue um arquivo/dados manuais para prosseguir.")
 
-    tabs = st.tabs([L['tab_serie'], L['tab_gumbel'], L['tab_pdf'], L['tab_idf'],
-                    L['tab_tables'], L['tab_sherman']])
+# ──────────────────────────────────────────────────────────────────────────────
+# ETAPA 3: 🔍 Diagnóstico e Parâmetros
+# ──────────────────────────────────────────────────────────────────────────────
+elif curr_s == 3:
+    st.subheader(f"🔍 {t('stepper_step3', lang)}")
 
-    with tabs[0]:
-        st.plotly_chart(fh, use_container_width=True)
-        st.dataframe(results['series_df'], use_container_width=True, hide_index=True)
+    if st.session_state.loaded_df is None or st.session_state.loaded_df.empty:
+        st.warning("Nenhum dado pluviométrico foi carregado ainda. Por favor, volte para a Etapa 2 para baixar ou inserir dados.")
+        if st.button("⬅️ Voltar para Etapa 2", use_container_width=True):
+            st.session_state.current_step = 2
+            st.rerun()
+    else:
+        df_base = st.session_state.loaded_df.copy()
+        col_ano = 'Ano' if 'Ano' in df_base.columns else t('col_ano', lang)
+        anos_disp = sorted(df_base[col_ano].dropna().unique().astype(int))
+        ano_min, ano_max = int(anos_disp[0]), int(anos_disp[-1])
 
-    with tabs[1]:
-        st.plotly_chart(fg, use_container_width=True)
-        st.dataframe(results['gumbel_df'], use_container_width=True, hide_index=True)
+        st.markdown(f"### 🗓️ {t('sec_period_title', lang)}")
+        c_y0, c_y1 = st.columns(2)
+        def_y0 = st.session_state.year_start if st.session_state.year_start is not None else ano_min
+        def_y1 = st.session_state.year_end if st.session_state.year_end is not None else ano_max
+        def_y0 = max(ano_min, min(int(def_y0), ano_max))
+        def_y1 = max(ano_min, min(int(def_y1), ano_max))
 
-    with tabs[2]:
-        st.plotly_chart(fp, use_container_width=True)
-        st.dataframe(results['disagg_df'], use_container_width=True, hide_index=True)
+        y0 = c_y0.number_input(t('year_start_label', lang), min_value=ano_min, max_value=ano_max, value=def_y0)
+        y1 = c_y1.number_input(t('year_end_label', lang), min_value=ano_min, max_value=ano_max, value=def_y1)
+        st.session_state.year_start = int(y0)
+        st.session_state.year_end = int(y1)
 
-    with tabs[3]:
-        st.plotly_chart(fi, use_container_width=True)
-        st.dataframe(results['idf_df'], use_container_width=True, hide_index=True)
+        mask_temp = (df_base[col_ano] >= y0) & (df_base[col_ano] <= y1)
+        df_temp = df_base[mask_temp].reset_index(drop=True)
 
-    with tabs[4]:
-        st.markdown(f"**{L['tab_serie']}**")
-        st.dataframe(results['series_df'], use_container_width=True, hide_index=True)
-        st.markdown(f"**{L['tab_gumbel']}**")
-        st.dataframe(results['gumbel_df'], use_container_width=True, hide_index=True)
-        st.markdown(f"**{L['tab_idf']}**")
-        st.dataframe(results['idf_df'], use_container_width=True, hide_index=True)
+        st.markdown(f"### 🛡️ {t('diag_quality_title', lang)}")
+        c_limiar, c_excluir = st.columns([1.5, 2.5])
+        limiar_cob = c_limiar.slider(
+            t('diag_coverage_label', lang),
+            min_value=50.0,
+            max_value=100.0,
+            value=float(st.session_state.limiar_cobertura_pct),
+            step=5.0,
+            help=t('diag_coverage_help', lang),
+        )
+        st.session_state.limiar_cobertura_pct = limiar_cob
 
-    with tabs[5]:
-        A, B, C, D = sherman['A'], sherman['B'], sherman['C'], sherman['D']
-        st.markdown(f"### {L['sherman_eq']}")
-        st.latex(r"i = \frac{%.4f \cdot T^{%.4f}}{(t + %.4f)^{%.4f}}" % (A, B, C, D))
-        st.markdown(f"**{L['params']}**")
-        st.json({'A': round(A, 4), 'B': round(B, 4), 'C': round(C, 4), 'D': round(D, 4)})
-        g1, g2, g3 = st.columns(3)
-        if 'R²' in sherman:
+        excluir_inc = c_excluir.checkbox(
+            "Descartar anos civis com cobertura de dias válidos inferior ao limiar",
+            value=st.session_state.excluir_incompletos,
+            help="Se ativo, anos com menos dias válidos que o limiar são excluídos do cálculo e documentados no memorial.",
+        )
+        st.session_state.excluir_incompletos = excluir_inc
+
+        diag_prev = analisar_qualidade_serie(
+            df_temp,
+            limiar_cobertura_pct=limiar_cob,
+            excluir_incompletos=excluir_inc,
+            lang=lang,
+        )
+
+        q1, q2, q3 = st.columns(3)
+        q1.metric("Anos na Série", f"{diag_prev['n_apos_descarte']} de {diag_prev['n_bruto']}")
+        cv = diag_prev['cv']
+        cv_status = "✅ Normal (0.15 - 0.30)" if (0.15 <= cv <= 0.30) else "⚠️ Fora do intervalo usual"
+        q2.metric("Coef. Variação (CV)", f"{cv:.2f}", cv_status)
+        mk = diag_prev['mann_kendall']
+        mk_status = "⚠️ Tendência detectada" if mk['tendencia_significativa'] else "✅ Estacionária"
+        q3.metric("Mann-Kendall (τ)", f"{mk['tau']:.3f}", mk_status)
+
+        if diag_prev['anos_descartados']:
+            with st.expander(f"📋 {t('diag_discarded_years', lang)} ({len(diag_prev['anos_descartados'])} anos)", expanded=False):
+                df_desc = pd.DataFrame([{
+                    'Ano': item['ano'],
+                    'Precipitação (mm)': item['precipitacao'],
+                    'Dias Válidos': item.get('dias_validos', '—'),
+                    'Motivo': item['motivo'],
+                } for item in diag_prev['anos_descartados']])
+                st.dataframe(df_desc, use_container_width=True, hide_index=True)
+
+        outs = diag_prev['outliers']
+        if outs:
+            for o in outs:
+                st.warning(f"⚠️ {t('diag_outlier_found', lang).format(o['ano'], o['valor'], o['teste'])}")
+
+        st.markdown("### 🧮 Método de Ajuste da Equação de Sherman")
+        modo_opts = [
+            "Ajuste em Espaço Logarítmico com Bounds da Literatura (Recomendado)",
+            "Ajuste Linear Direto sem Bounds (Legado)",
+        ]
+        idx_m = 0 if st.session_state.modo_ajuste_sherman == 'log' else 1
+        modo_sel = st.radio("Metodologia de regressão não-linear:", modo_opts, index=idx_m)
+        st.session_state.modo_ajuste_sherman = 'log' if modo_sel == modo_opts[0] else 'linear_sem_bounds'
+
+        st.divider()
+        if st.button(f"⚡ {t('btn_run_analysis', lang)}", type='primary', use_container_width=True):
+            try:
+                with st.spinner(L['run']):
+                    results = run_full_analysis(
+                        df_input=df_base,
+                        isozona=st.session_state.isozona_escolhida,
+                        lang=lang,
+                        year_start=int(y0),
+                        year_end=int(y1),
+                        limiar_cobertura_pct=limiar_cob,
+                        excluir_incompletos=excluir_inc,
+                        modo_ajuste_sherman=st.session_state.modo_ajuste_sherman,
+                    )
+                st.session_state.results = results
+                h = calcular_hash_inputs(
+                    isozona=st.session_state.isozona_escolhida,
+                    lat=float(st.session_state.proj_lat),
+                    lon=float(st.session_state.proj_lon),
+                    data_method=st.session_state.data_source_method,
+                    estacao_str=st.session_state.estacao_input,
+                    df_series=df_base,
+                    y0=int(y0),
+                    y1=int(y1),
+                    limiar_cob=float(limiar_cob),
+                    excluir_inc=bool(excluir_inc),
+                    modo_sherman=st.session_state.modo_ajuste_sherman,
+                    idw_p=float(st.session_state.idw_p),
+                )
+                st.session_state.calc_hash = h
+                st.session_state.report_ctx = {
+                    'responsavel': responsavel,
+                    'localizacao': localizacao,
+                    'estacao': estacao or st.session_state.estacao_input or '—',
+                    'lang': lang,
+                    'coords': (float(st.session_state.proj_lat), float(st.session_state.proj_lon)),
+                    'idw_meta': st.session_state.idw_meta,
+                }
+                st.session_state.current_step = 4
+                st.rerun()
+            except UserError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Erro na análise: {e}")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ETAPA 4: 📊 Resultados e Memorial
+# ──────────────────────────────────────────────────────────────────────────────
+elif curr_s == 4:
+    st.subheader(f"📊 {t('stepper_step4', lang)}")
+
+    results = st.session_state.results
+    if not results:
+        st.info(L['no_data_yet'])
+        if st.button("⬅️ Ir para Etapa 3 (Diagnóstico e Execução)", use_container_width=True):
+            st.session_state.current_step = 3
+            st.rerun()
+    else:
+        current_hash = calcular_hash_inputs(
+            isozona=st.session_state.isozona_escolhida,
+            lat=float(st.session_state.proj_lat),
+            lon=float(st.session_state.proj_lon),
+            data_method=st.session_state.data_source_method,
+            estacao_str=st.session_state.estacao_input,
+            df_series=st.session_state.loaded_df,
+            y0=st.session_state.year_start,
+            y1=st.session_state.year_end,
+            limiar_cob=float(st.session_state.limiar_cobertura_pct),
+            excluir_inc=bool(st.session_state.excluir_incompletos),
+            modo_sherman=st.session_state.modo_ajuste_sherman,
+            idw_p=float(st.session_state.idw_p),
+        )
+        params_changed = (st.session_state.calc_hash is not None and current_hash != st.session_state.calc_hash)
+
+        if params_changed:
+            st.warning(f"⚠️ **{t('hash_warning_title', lang)}**\n\n{t('hash_warning_desc', lang)}")
+            if st.button(f"⚡ {t('btn_run_analysis', lang)} (Recalcular com parâmetros atuais)", type='primary', use_container_width=True):
+                st.session_state.current_step = 3
+                st.rerun()
+
+        cons = results.get('physical_consistency', {})
+        if cons.get('status') == 'OK':
+            st.success(t('phys_cons_ok', lang))
+        else:
+            with st.expander(f"⚠️ {t('phys_cons_title', lang)} — Informações Metodológicas", expanded=False):
+                for v in cons.get('violacoes_tempo', []):
+                    st.caption(f"- {v}")
+                for v in cons.get('violacoes_freq', []):
+                    st.caption(f"- {v}")
+
+        sherman = results['sherman_params']
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric(L['n_years'], results['n_samples'])
+        m2.metric('μ (Gumbel)', f"{results['mu']:.2f} mm")
+        m3.metric('σ (Gumbel)', f"{results['sigma']:.2f} mm")
+        m4.metric('R² (Sherman)', f"{sherman['R²']:.4f}")
+        m5.metric('NSE (Sherman)', f"{sherman['NSE']:.4f}")
+
+        fh, fg, fp, fi = figuras(results)
+
+        t1, t2, t3 = st.tabs([t('tab_data_diag', lang), t('tab_stat_fit', lang), t('tab_curves_eq', lang)])
+
+        with t1:
+            st.plotly_chart(fh, use_container_width=True)
+            st.dataframe(results['series_df'], height=320, use_container_width=True, hide_index=True)
+            csv_s = results['series_df'].to_csv(index=False).encode('utf-8')
+            st.download_button(f"📥 {t('btn_dl_csv', lang)} (Série Histórica)", data=csv_s, file_name="serie_historica.csv", mime="text/csv")
+
+            with st.container(border=True):
+                st.markdown(f"**{t('diag_quality_title', lang)}**")
+                q_diag = results.get('quality_diag', {})
+                if q_diag:
+                    cv_val = q_diag.get('cv', 0.0)
+                    st.markdown(f"- **{t('diag_cv_label', lang)}:** `{cv_val:.2f}` — {'✅ ' + t('diag_cv_ok', lang).format(cv_val) if 0.15 <= cv_val <= 0.30 else '⚠️ ' + t('diag_cv_alert', lang).format(cv_val)}")
+                    mk_info = q_diag.get('mann_kendall', {})
+                    if mk_info:
+                        tau_val = mk_info.get('tau', 0.0)
+                        pval = mk_info.get('p_value', 1.0)
+                        st.markdown(f"- **{t('diag_mk_title', lang)}:** τ=`{tau_val:.4f}`, p-valor=`{pval:.4f}` — {t('diag_mk_trend', lang).format(tau_val, pval) if mk_info.get('tendencia_significativa') else t('diag_mk_no_trend', lang).format(tau_val, pval)}")
+
+                desc_anos = results.get('anos_descartados', [])
+                if desc_anos:
+                    st.markdown(f"**{t('diag_discarded_years', lang)}:**")
+                    df_desc_r = pd.DataFrame([{
+                        'Ano': a['ano'],
+                        'Precipitação (mm)': a['precipitacao'],
+                        'Dias Válidos': a.get('dias_validos', '—'),
+                        'Motivo': a['motivo'],
+                    } for a in desc_anos])
+                    st.dataframe(df_desc_r, use_container_width=True, hide_index=True)
+
+        with t2:
+            st.plotly_chart(fg, use_container_width=True)
+            st.dataframe(results['gumbel_df'], use_container_width=True, hide_index=True)
+            csv_g = results['gumbel_df'].to_csv(index=False).encode('utf-8')
+            st.download_button(f"📥 {t('btn_dl_csv', lang)} (Gumbel)", data=csv_g, file_name="gumbel_analise.csv", mime="text/csv")
+
+            st.plotly_chart(fp, use_container_width=True)
+            st.dataframe(results['disagg_df'], height=320, use_container_width=True, hide_index=True)
+            csv_d = results['disagg_df'].to_csv(index=False).encode('utf-8')
+            st.download_button(f"📥 {t('btn_dl_csv', lang)} (Desagregação Taborga)", data=csv_d, file_name="desagregacao_taborga.csv", mime="text/csv")
+
+            with st.expander("📐 " + t('gumbel_mem_card', lang), expanded=False):
+                gm = results.get('gumbel_memory', {})
+                if gm:
+                    c_g1, c_g2, c_g3 = st.columns(3)
+                    c_g1.metric("K1 (Yn)", f"{gm.get('yn', 0.0):.4f}")
+                    c_g2.metric("K2 (Sn)", f"{gm.get('sn', 0.0):.4f}")
+                    c_g3.metric("Fórmula Ven Te Chow", "Pt = μ + Kt · σ")
+                    st.dataframe(gm.get('ordered_df'), height=280, use_container_width=True, hide_index=True)
+
+        with t3:
+            st.plotly_chart(fi, use_container_width=True)
+            st.dataframe(results['idf_df'], height=320, use_container_width=True, hide_index=True)
+            csv_i = results['idf_df'].to_csv(index=False).encode('utf-8')
+            st.download_button(f"📥 {t('btn_dl_csv', lang)} (Curvas IDF)", data=csv_i, file_name="curvas_idf.csv", mime="text/csv")
+
+            A, B, C, D = sherman['A'], sherman['B'], sherman['C'], sherman['D']
+            st.markdown(f"### {L['sherman_eq']}")
+            st.latex(r"i = \frac{%.4f \cdot TR^{%.4f}}{(t + %.4f)^{%.4f}}" % (A, B, C, D))
+
+            df_sherman_params = pd.DataFrame([
+                {'Parâmetro': 'A', 'Valor Ajustado': f"{A:.4f}", 'Erro Padrão': f"{sherman.get('se_A', 0.0):.4f}", 'IC 95% Inferior': f"{sherman.get('ci_A', (0,0))[0]:.2f}", 'IC 95% Superior': f"{sherman.get('ci_A', (0,0))[1]:.2f}", 'Faixa da Literatura': '10.0 a 20000.0'},
+                {'Parâmetro': 'B', 'Valor Ajustado': f"{B:.4f}", 'Erro Padrão': f"{sherman.get('se_B', 0.0):.4f}", 'IC 95% Inferior': f"{sherman.get('ci_B', (0,0))[0]:.4f}", 'IC 95% Superior': f"{sherman.get('ci_B', (0,0))[1]:.4f}", 'Faixa da Literatura': '0.08 a 0.45'},
+                {'Parâmetro': 'C', 'Valor Ajustado': f"{C:.4f}", 'Erro Padrão': f"{sherman.get('se_C', 0.0):.4f}", 'IC 95% Inferior': f"{sherman.get('ci_C', (0,0))[0]:.2f}", 'IC 95% Superior': f"{sherman.get('ci_C', (0,0))[1]:.2f}", 'Faixa da Literatura': '3.0 a 70.0'},
+                {'Parâmetro': 'D', 'Valor Ajustado': f"{D:.4f}", 'Erro Padrão': f"{sherman.get('se_D', 0.0):.4f}", 'IC 95% Inferior': f"{sherman.get('ci_D', (0,0))[0]:.4f}", 'IC 95% Superior': f"{sherman.get('ci_D', (0,0))[1]:.4f}", 'Faixa da Literatura': '0.50 a 0.98'},
+            ])
+            st.dataframe(df_sherman_params, use_container_width=True, hide_index=True)
+
+            g1, g2, g3, g4, g5 = st.columns(5)
             g1.metric('R²', f"{sherman['R²']:.4f}")
-        if 'RMSE' in sherman:
-            g2.metric('RMSE', f"{sherman['RMSE']:.3f}")
-        if 'NSE' in sherman:
-            g3.metric('NSE', f"{sherman['NSE']:.4f}")
+            g2.metric('NSE', f"{sherman['NSE']:.4f}")
+            g3.metric('RMSE', f"{sherman['RMSE']:.2f} mm/h")
+            g4.metric(t('max_cell_error', lang), f"{sherman.get('erro_max_celula', 0.0):.2f}%")
+            g5.metric(t('mean_cell_error', lang), f"{sherman.get('erro_medio_celula', 0.0):.2f}%")
 
-    # ── Downloads ─────────────────────────────────────────────────────────────
-    st.divider()
-    st.subheader(L['downloads'])
-    ctx = st.session_state.report_ctx
-    d1, d2 = st.columns(2)
+            for p_name, b_val in sherman.get('bounds_touched', []):
+                st.warning(t('bound_touch_alert', lang).format(p_name, sherman[p_name], b_val))
 
-    with d1:
-        try:
-            pdf_bytes = generate_pdf_report(
-                results, ctx['responsavel'], ctx['localizacao'], ctx['estacao'],
-                fh, fg, fp, fi, lang=lang,
-                coords=ctx.get('coords'), idw_meta=ctx.get('idw_meta'),
-            )
-            st.download_button(L['dl_pdf'], data=pdf_bytes,
-                               file_name='memorial_calculo_idf.pdf',
-                               mime='application/pdf', use_container_width=True)
-        except Exception as e:
-            st.warning(f'PDF: {e}')
+        st.divider()
+        st.subheader(L['downloads'])
+        if params_changed:
+            st.error(f"🚫 {t('export_blocked_msg', lang)}")
 
-    with d2:
-        try:
-            docx_bytes = generate_word_report(
-                results, ctx['responsavel'], ctx['localizacao'], ctx['estacao'],
-                fh, fg, fp, fi, lang=lang,
-                coords=ctx.get('coords'), idw_meta=ctx.get('idw_meta'),
-            )
-            st.download_button(
-                L['dl_word'], data=docx_bytes,
-                file_name='memorial_calculo_idf.docx',
-                mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                use_container_width=True)
-        except Exception as e:
-            st.warning(f'Word: {e}')
+        ctx = st.session_state.report_ctx
+        d1, d2 = st.columns(2)
+
+        with d1:
+            try:
+                pdf_bytes = generate_pdf_report(
+                    results,
+                    ctx.get('responsavel', responsavel),
+                    ctx.get('localizacao', localizacao),
+                    ctx.get('estacao', estacao or '—'),
+                    fh, fg, fp, fi,
+                    lang=lang,
+                    coords=ctx.get('coords'),
+                    idw_meta=ctx.get('idw_meta'),
+                ) if not params_changed else b''
+                st.download_button(
+                    L['dl_pdf'],
+                    data=pdf_bytes,
+                    file_name='memorial_calculo_idf.pdf',
+                    mime='application/pdf',
+                    use_container_width=True,
+                    disabled=params_changed,
+                )
+            except Exception as e:
+                st.warning(f'PDF: {e}')
+
+        with d2:
+            try:
+                docx_bytes = generate_word_report(
+                    results,
+                    ctx.get('responsavel', responsavel),
+                    ctx.get('localizacao', localizacao),
+                    ctx.get('estacao', estacao or '—'),
+                    fh, fg, fp, fi,
+                    lang=lang,
+                    coords=ctx.get('coords'),
+                    idw_meta=ctx.get('idw_meta'),
+                ) if not params_changed else b''
+                st.download_button(
+                    L['dl_word'],
+                    data=docx_bytes,
+                    file_name='memorial_calculo_idf.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,
+                    disabled=params_changed,
+                )
+            except Exception as e:
+                st.warning(f'Word: {e}')
 
 # ── Rodapé / créditos ─────────────────────────────────────────────────────────
 st.divider()

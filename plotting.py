@@ -168,12 +168,22 @@ def fig_idf_curves(idf_df, sherman_params: dict, lang: str = 'PT') -> go.Figure:
         xaxis=dict(
             title=dict(text=t('axis_duration_min', lang)),
             type='log',
+            dtick=1,
         ),
         yaxis=dict(
-            title=dict(text=t('axis_intensity', lang)),
+            title=dict(text="Intensidade de Precipitação i (mm/h)" if lang == 'PT' else "Precipitation Intensity i (mm/h)"),
             type='log',
+            dtick=1,
         ),
         template='plotly_white',
-        legend=dict(title=t('legend_tr', lang), orientation='v', font=dict(size=10)),
+        legend=dict(
+            title=dict(text=t('legend_tr', lang)),
+            x=1.02,
+            y=1.0,
+            xanchor='left',
+            yanchor='top',
+            orientation='v',
+            font=dict(size=10),
+        ),
     )
     return fig
