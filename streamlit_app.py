@@ -469,6 +469,7 @@ def init_state():
     st.session_state.setdefault('search_radius_km', 35)
     st.session_state.setdefault('selection_mode', 'single')  # 'single' ou 'idw'
     st.session_state.setdefault('idw_meta', None)
+    st.session_state.setdefault('station_info', None)
     st.session_state.setdefault('idw_p', 2.0)             # Expoente de distância IDW
     st.session_state.setdefault('last_clicked_coords', None)
     st.session_state.setdefault('uf_sel', 'SP')
@@ -1001,6 +1002,13 @@ elif curr_s == 2:
                             st.session_state.ana_series_text = '\n'.join(df_baixado[col_p].astype(str).tolist())
                             st.session_state.estacao_input = f"{cod_sel} ({est_obj['nome']})"
                             st.session_state.idw_meta = None
+                            st.session_state.station_info = {
+                                'codigo': cod_sel,
+                                'nome': est_obj['nome'],
+                                'latitude': est_obj.get('latitude'),
+                                'longitude': est_obj.get('longitude'),
+                                'distancia_km': est_obj.get('distancia_km', 0.0),
+                            }
                             st.session_state.download_info = {
                                 'tipo': 'single',
                                 'cod': cod_sel,
@@ -1177,6 +1185,8 @@ elif curr_s == 2:
                                             'peso_pct': pesos_finais.get(e['codigo'], 0.0) * 100.0,
                                             'operadora': e.get('operadora', '—'),
                                             'altitude': e.get('altitude', '—'),
+                                            'latitude': e.get('latitude'),
+                                            'longitude': e.get('longitude'),
                                         }
                                         for e in estacoes_sel if e['codigo'] in series_dict
                                     ],
@@ -1184,6 +1194,7 @@ elif curr_s == 2:
                                     'p': idw_p,
                                     'n_eff': n_eff_val,
                                 }
+                                st.session_state.station_info = None
                                 st.session_state.download_info = {
                                     'tipo': 'idw',
                                     'n_est': len(series_dict),
@@ -1392,6 +1403,8 @@ elif curr_s == 3:
                     'lang': lang,
                     'coords': (float(st.session_state.proj_lat), float(st.session_state.proj_lon)),
                     'idw_meta': st.session_state.idw_meta,
+                    'station_info': st.session_state.get('station_info'),
+                    'search_radius_km': float(st.session_state.get('search_radius_km', 35)),
                 }
                 st.session_state.current_step = 4
                 st.rerun()
@@ -1568,6 +1581,8 @@ elif curr_s == 4:
                     lang=lang,
                     coords=ctx.get('coords'),
                     idw_meta=ctx.get('idw_meta'),
+                    station_info=ctx.get('station_info'),
+                    search_radius_km=float(ctx.get('search_radius_km', 35)),
                 ) if not params_changed else b''
                 st.download_button(
                     L['dl_pdf'],
@@ -1591,6 +1606,8 @@ elif curr_s == 4:
                     lang=lang,
                     coords=ctx.get('coords'),
                     idw_meta=ctx.get('idw_meta'),
+                    station_info=ctx.get('station_info'),
+                    search_radius_km=float(ctx.get('search_radius_km', 35)),
                 ) if not params_changed else b''
                 st.download_button(
                     L['dl_word'],

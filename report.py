@@ -21,7 +21,10 @@ from reportlab.platypus import (
 )
 from reportlab.platypus.flowables import Flowable
 from reportlab.pdfgen import canvas as rl_canvas
-from calculations import DURATIONS, ISOZONA_CONSTANTS, RETURN_PERIODS, SHERMAN_TYPICAL_RANGES
+from calculations import (
+    DURATIONS, ISOZONA_CONSTANTS, RETURN_PERIODS, SHERMAN_TYPICAL_RANGES,
+    gerar_png_mapa_isozonas, gerar_png_mapa_local,
+)
 from i18n import t
 
 logger = logging.getLogger("viktor")
@@ -327,6 +330,8 @@ def generate_pdf_report(
     lang: str = 'PT',
     coords: tuple[float, float] | None = None,
     idw_meta: dict | None = None,
+    station_info: dict | None = None,
+    search_radius_km: float = 35.0,
 ) -> bytes:
     """
     Generate a complete PDF Memorial de Cálculo / Calculation Report.
@@ -477,14 +482,24 @@ def generate_pdf_report(
     story.append(Paragraph(t('report_s2_desc', lang), st['Body']))
     story.append(Spacer(1, 0.2 * cm))
 
+    col_p = t('col_precip', lang)
+    if col_p not in series_df.columns:
+        for c in ('Precipitacao', 'precipitacao', 'Precip', 'precip', 'Chuva'):
+            if c in series_df.columns:
+                col_p = c
+                break
+
+    p_min = float(series_df[col_p].min()) if col_p in series_df.columns else 0.0
+    p_max = float(series_df[col_p].max()) if col_p in series_df.columns else 0.0
+
     # Key stats for this step
     story.append(_kv_table([
         ('N (amostras / samples)', str(n)),
         ('Período / Period', period_str),
         ('μ (média / mean)', f'{mu:.3f} mm'),
         ('σ (desvio padrão / std dev)', f'{sigma:.3f} mm'),
-        ('Mín / Min', f'{series_df[t("col_precip", lang)].min():.1f} mm'),
-        ('Máx / Max', f'{series_df[t("col_precip", lang)].max():.1f} mm'),
+        ('Mín / Min', f'{p_min:.1f} mm'),
+        ('Máx / Max', f'{p_max:.1f} mm'),
     ], st, key_w=6 * cm))
     story.append(Spacer(1, 0.3 * cm))
 
@@ -550,10 +565,36 @@ def generate_pdf_report(
         story.append(desc_tbl)
         story.append(Spacer(1, 0.3 * cm))
 
+    # Mapa de Localização da Obra e Estações Pluviométricas
+    png_mapa_local = gerar_png_mapa_local(
+        coords=coords,
+        localizacao=localizacao,
+        idw_meta=idw_meta,
+        station_info=station_info,
+        search_radius_km=search_radius_km,
+        lang=lang,
+    )
+    if png_mapa_local:
+        story.append(Paragraph(
+            '<b>' + ('Mapa de Localização da Obra e Estações Pluviométricas' if is_pt
+            else 'Project Location & Rain Gauge Stations Map') + '</b>',
+            st['H3']
+        ))
+        story.append(Spacer(1, 0.15 * cm))
+        story.extend(_png_flowable(png_mapa_local, max_width=CONTENT_W))
+        story.append(Spacer(1, 0.15 * cm))
+        cap_local = (
+            f"Figura 1 — Localização da obra ({localizacao or 'Projeto'}) e estações pluviométricas no raio de {search_radius_km:.0f} km"
+            if is_pt else
+            f"Figure 1 — Project location ({localizacao or 'Project'}) and rain gauge stations within {search_radius_km:.0f} km radius"
+        )
+        story.append(Paragraph(f'<i>{cap_local}</i>', st['Caption']))
+        story.append(Spacer(1, 0.35 * cm))
+
     story.extend(_png_flowable(png_hist))
     story.append(Paragraph(
-        'Figura 1 — Série histórica de precipitação máxima diária anual' if is_pt
-        else 'Figure 1 — Annual maximum daily precipitation historical series',
+        'Figura 2 — Série histórica de precipitação máxima diária anual' if is_pt
+        else 'Figure 2 — Annual maximum daily precipitation historical series',
         st['Caption'],
     ))
     story.append(Spacer(1, 0.4 * cm))
@@ -836,6 +877,25 @@ def generate_pdf_report(
         st['Body'],
     ))
     story.append(Spacer(1, 0.2 * cm))
+
+    # Mapa Oficial de Isozonas de Chuvas Intensas do Brasil (Taborga, 1974) com Pin
+    png_mapa_isozona = gerar_png_mapa_isozonas(coords)
+    if png_mapa_isozona:
+        story.append(Paragraph(
+            '<b>' + (f'Enquadramento no Mapa Oficial de Isozonas (Taborga, 1974) — Isozona {isozona}' if is_pt
+            else f'Official Isozone Map Framing (Taborga, 1974) — Isozone {isozona}') + '</b>',
+            st['H3']
+        ))
+        story.append(Spacer(1, 0.15 * cm))
+        story.extend(_png_flowable(png_mapa_isozona, max_width=11.5 * cm))
+        story.append(Spacer(1, 0.15 * cm))
+        cap_iso = (
+            f"Figura — Posição geográfica da obra no Mapa de Isozonas do Brasil (Taborga, 1974) identificando a Isozona {isozona}"
+            if is_pt else
+            f"Figure — Project geographical location on the Brazil Isozone Map (Taborga, 1974) identifying Isozone {isozona}"
+        )
+        story.append(Paragraph(f'<i>{cap_iso}</i>', st['Caption']))
+        story.append(Spacer(1, 0.3 * cm))
 
     # Equations — Passo 4 (visual math format)
     story.append(SectionHeader('Equações / Equations', bg_color=GREY_DARK, height=18, font_size=9))

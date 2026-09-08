@@ -42,6 +42,8 @@ from calculations import (
     SHERMAN_TYPICAL_RANGES,
     DURATIONS,
     RETURN_PERIODS,
+    gerar_png_mapa_isozonas,
+    gerar_png_mapa_local,
 )
 from i18n import t
 import report
@@ -343,6 +345,27 @@ def test_regression_novo_progresso():
     assert iso_np == 'E', f"Novo Progresso, PA deve ser Isozona E, obteve {iso_np}"
 
 
+# ── Feature: Mapas de Localização e Isozonas nos Relatórios ────────────────────
+def test_report_maps_inclusion():
+    coords = (-16.65, -48.60)
+    png_iso = gerar_png_mapa_isozonas(coords)
+    assert png_iso is not None and len(png_iso) > 10000, "PNG de Isozonas deve ser gerado"
+
+    png_loc = gerar_png_mapa_local(
+        coords=coords,
+        localizacao="Silvânia - GO",
+        idw_meta={
+            'stations': [
+                {'codigo': '1648027', 'nome': 'SILVANIA', 'distancia_km': 2.5, 'peso_pct': 70.0, 'latitude': -16.66, 'longitude': -48.61},
+                {'codigo': '1648001', 'nome': 'BOA VISTA', 'distancia_km': 15.2, 'peso_pct': 30.0, 'latitude': -16.55, 'longitude': -48.52},
+            ]
+        },
+        search_radius_km=35.0,
+        lang='PT',
+    )
+    assert png_loc is not None and len(png_loc) > 1000, "PNG de Localização deve ser gerado"
+
+
 if __name__ == '__main__':
     tests = [
         ('P0-1: Preservação de coluna de duração', test_p0_1_duration_column_preserved),
@@ -357,6 +380,7 @@ if __name__ == '__main__':
         ('P2-11: Texto de plausibilidade do CV no i18n', test_p2_11_cv_alert_i18n),
         ('P2-12: Centralização de constantes de Sherman', test_p2_12_sherman_constants_centralization),
         ('Regressão: Novo Progresso, PA Isozona E', test_regression_novo_progresso),
+        ('Feature: Mapas de Localização e Isozonas nos Relatórios', test_report_maps_inclusion),
     ]
 
     passed = 0

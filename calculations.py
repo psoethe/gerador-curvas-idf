@@ -226,6 +226,297 @@ def desenhar_pin_mapa_isozonas(lat: float, lon: float, img_path: str = None) -> 
 
     return Image.alpha_composite(base_img, overlay).convert('RGB')
 
+
+def gerar_png_mapa_isozonas(coords: tuple[float, float] | None, img_path: str = None) -> bytes | None:
+    """
+    Gera bytes PNG do Mapa Oficial de Isozonas de Chuvas Intensas do Brasil (Taborga, 1974)
+    com o marcador (crosshair alvo vermelho e centro branco) posicionado na coordenada da obra.
+    """
+    if not coords or coords[0] is None or coords[1] is None:
+        return None
+    try:
+        img = desenhar_pin_mapa_isozonas(float(coords[0]), float(coords[1]), img_path=img_path)
+        if img is None:
+            return None
+        buf = io.BytesIO()
+        img.save(buf, format='PNG', optimize=True)
+        return buf.getvalue()
+    except Exception as exc:
+        logger.warning(f"⚠️ Erro ao gerar PNG do mapa de isozonas com pin: {exc}")
+        return None
+
+
+def gerar_figura_mapa_local(
+    coords: tuple[float, float] | None,
+    localizacao: str = '',
+    idw_meta: dict | None = None,
+    station_info: dict | None = None,
+    search_radius_km: float = 35.0,
+    lang: str = 'PT',
+):
+    """
+    Cria uma figura Plotly com mapa OpenStreetMap contendo a localização da obra
+    (pin vermelho), o raio de busca do projeto e a(s) estação(ões) pluviométrica(s) (pins azuis).
+    """
+    if not coords or coords[0] is None or coords[1] is None:
+        return None
+
+    try:
+        lat0 = float(coords[0])
+        lon0 = float(coords[1])
+    except (ValueError, TypeError):
+        return None
+
+    import plotly.graph_objects as go
+
+    is_pt = lang == 'PT'
+    fig = go.Figure()
+
+    all_lats = [lat0]
+    all_lons = [lon0]
+
+    # Círculo geodésico aproximado do raio de busca
+    if search_radius_km and search_radius_km > 0:
+        r_km = float(search_radius_km)
+        thetas = np.linspace(0, 2 * np.pi, 64)
+        c_lats = lat0 + (r_km / 111.0) * np.sin(thetas)
+        c_lons = lon0 + (r_km / (111.0 * max(0.01, np.cos(np.radians(lat0))))) * np.cos(thetas)
+        all_lats.extend(c_lats.tolist())
+        all_lons.extend(c_lons.tolist())
+
+        r_lbl = f"{'Raio de Busca' if is_pt else 'Search Radius'} ({r_km:.0f} km)"
+        fig.add_trace(go.Scattermap(
+            lat=c_lats,
+            lon=c_lons,
+            mode='lines',
+            line=dict(color='#3b82f6', width=1.8),
+            name=r_lbl,
+            hoverinfo='skip',
+        ))
+
+    # Estações pluviométricas
+    st_lats = []
+    st_lons = []
+    st_texts = []
+
+    if idw_meta and idw_meta.get('stations'):
+        for s in idw_meta['stations']:
+            s_lat = s.get('latitude')
+            s_lon = s.get('longitude')
+            if s_lat is not None and s_lon is not None:
+                try:
+                    s_lat = float(s_lat)
+                    s_lon = float(s_lon)
+                    st_lats.append(s_lat)
+                    st_lons.append(s_lon)
+                    all_lats.append(s_lat)
+                    all_lons.append(s_lon)
+                    d_km = s.get('distancia_km', 0.0)
+                    p_pct = s.get('peso_pct', 0.0)
+                    cod = s.get('codigo', '—')
+                    st_texts.append(f"{cod} ({d_km:.1f} km, {p_pct:.0f}%)")
+                except (ValueError, TypeError):
+                    pass
+    elif station_info and station_info.get('latitude') is not None and station_info.get('longitude') is not None:
+        try:
+            s_lat = float(station_info['latitude'])
+            s_lon = float(station_info['longitude'])
+            st_lats.append(s_lat)
+            st_lons.append(s_lon)
+            all_lats.append(s_lat)
+            all_lons.append(s_lon)
+            d_km = station_info.get('distancia_km', 0.0)
+            cod = station_info.get('codigo', '—')
+            st_texts.append(f"{cod} ({d_km:.1f} km)")
+        except (ValueError, TypeError):
+            pass
+
+    if st_lats:
+        st_label = 'Estações ANA' if is_pt else 'ANA Stations'
+        fig.add_trace(go.Scattermap(
+            lat=st_lats,
+            lon=st_lons,
+            mode='markers+text',
+            marker=dict(size=14, color='#2563eb'),
+            text=st_texts,
+            textposition='top right',
+            textfont=dict(size=10, color='#1e293b'),
+            name=st_label,
+        ))
+
+    # Ponto do projeto (Local da Obra)
+    loc_nome = localizacao or ('Obra' if is_pt else 'Project')
+    obra_label = 'Local da Obra' if is_pt else 'Project Location'
+    fig.add_trace(go.Scattermap(
+        lat=[lat0],
+        lon=[lon0],
+        mode='markers+text',
+        marker=dict(size=18, color='#dc2626'),
+        text=[f"📍 {loc_nome}"],
+        textposition='bottom center',
+        textfont=dict(size=11, color='#991b1b'),
+        name=obra_label,
+    ))
+
+    # Centro e zoom calculados
+    center_lat = float(np.mean(all_lats))
+    center_lon = float(np.mean(all_lons))
+    lat_span = max(all_lats) - min(all_lats)
+    lon_span = (max(all_lons) - min(all_lons)) * np.cos(np.radians(center_lat))
+    span = max(lat_span, lon_span, 0.02)
+    zoom = int(np.clip(round(11.5 - np.log2(span / 0.15)), 6, 14))
+
+    title_txt = (
+        '<b>Mapa de Localização da Obra e Estações Pluviométricas</b>'
+        if is_pt else
+        '<b>Project Location and Rain Gauge Stations Map</b>'
+    )
+
+    fig.update_layout(
+        map=dict(
+            style='open-street-map',
+            center=dict(lat=center_lat, lon=center_lon),
+            zoom=zoom,
+        ),
+        margin=dict(l=10, r=10, t=35, b=10),
+        title=dict(text=title_txt, x=0.5, font=dict(size=12, color='#0f172a')),
+        showlegend=True,
+        legend=dict(
+            x=0.02, y=0.98,
+            bgcolor='rgba(255, 255, 255, 0.85)',
+            bordercolor='#cbd5e1',
+            borderwidth=1,
+            font=dict(size=9),
+        ),
+        width=800,
+        height=440,
+    )
+
+    return fig
+
+
+def _desenhar_mapa_local_pillow(
+    coords: tuple[float, float],
+    localizacao: str = '',
+    idw_meta: dict | None = None,
+    station_info: dict | None = None,
+    search_radius_km: float = 35.0,
+    lang: str = 'PT',
+    width: int = 800,
+    height: int = 440,
+) -> bytes | None:
+    """Fallback gráfico de alta precisão via Pillow caso Kaleido/Plotly esteja indisponível."""
+    is_pt = lang == 'PT'
+    lat0, lon0 = float(coords[0]), float(coords[1])
+    img = Image.new('RGB', (width, height), color='#f8fafc')
+    draw = ImageDraw.Draw(img)
+
+    # Borda externa e grade geográfica
+    draw.rectangle([12, 12, width - 12, height - 12], outline='#cbd5e1', width=2)
+    for gx in range(80, width - 20, 80):
+        draw.line([gx, 12, gx, height - 12], fill='#f1f5f9', width=1)
+    for gy in range(50, height - 20, 50):
+        draw.line([12, gy, width - 12, gy], fill='#f1f5f9', width=1)
+
+    cx = width // 2
+    cy = height // 2 + 10
+    r_km = float(search_radius_km) if search_radius_km else 35.0
+    px_per_km = min(width * 0.35, height * 0.35) / max(1.0, r_km)
+
+    # Círculo do raio de busca
+    r_px = int(r_km * px_per_km)
+    draw.ellipse([cx - r_px, cy - r_px, cx + r_px, cy + r_px], outline='#3b82f6', width=2)
+
+    # Obra central
+    draw.ellipse([cx - 9, cy - 9, cx + 9, cy + 9], fill='#dc2626', outline='#ffffff', width=2)
+    loc_txt = f"Obra: {localizacao or 'Projeto'} ({lat0:.4f}, {lon0:.4f})"
+    draw.text((cx - len(loc_txt) * 3, cy + 14), loc_txt, fill='#991b1b')
+
+    # Estações
+    stations = []
+    if idw_meta and idw_meta.get('stations'):
+        stations = idw_meta['stations']
+    elif station_info:
+        stations = [station_info]
+
+    cos_lat = max(0.01, np.cos(np.radians(lat0)))
+    for s in stations:
+        s_lat = s.get('latitude')
+        s_lon = s.get('longitude')
+        if s_lat is not None and s_lon is not None:
+            dx_km = (float(s_lon) - lon0) * 111.0 * cos_lat
+            dy_km = (float(s_lat) - lat0) * 111.0
+            sx = int(cx + dx_km * px_per_km)
+            sy = int(cy - dy_km * px_per_km)
+            # Linha ligando à obra
+            draw.line([cx, cy, sx, sy], fill='#93c5fd', width=1)
+            # Pin da estação
+            draw.ellipse([sx - 7, sy - 7, sx + 7, sy + 7], fill='#2563eb', outline='#ffffff', width=2)
+            d_km = s.get('distancia_km', 0.0)
+            p_pct = s.get('peso_pct')
+            p_str = f", {p_pct:.0f}%" if p_pct is not None else ""
+            st_txt = f"{s.get('codigo', 'Est')} ({d_km:.1f} km{p_str})"
+            draw.text((sx + 9, sy - 7), st_txt, fill='#1e293b')
+
+    # Rosa dos ventos / Norte
+    nx, ny = width - 45, 45
+    draw.line([nx, ny + 15, nx, ny - 15], fill='#0f172a', width=2)
+    draw.polygon([(nx, ny - 18), (nx - 5, ny - 8), (nx + 5, ny - 8)], fill='#dc2626')
+    draw.text((nx - 4, ny - 30), 'N', fill='#0f172a')
+
+    # Título do mapa
+    tit = 'Mapa de Localização da Obra e Estações' if is_pt else 'Project Location & Stations Map'
+    draw.text((25, 20), tit, fill='#0f172a')
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG', optimize=True)
+    return buf.getvalue()
+
+
+def gerar_png_mapa_local(
+    coords: tuple[float, float] | None,
+    localizacao: str = '',
+    idw_meta: dict | None = None,
+    station_info: dict | None = None,
+    search_radius_km: float = 35.0,
+    lang: str = 'PT',
+    width: int = 800,
+    height: int = 440,
+) -> bytes | None:
+    """Exporta o mapa de localização para PNG bytes via Plotly/Kaleido com fallback via Pillow."""
+    if not coords or coords[0] is None or coords[1] is None:
+        return None
+
+    try:
+        fig = gerar_figura_mapa_local(
+            coords=coords,
+            localizacao=localizacao,
+            idw_meta=idw_meta,
+            station_info=station_info,
+            search_radius_km=search_radius_km,
+            lang=lang,
+        )
+        if fig is not None:
+            import plotly.io as pio
+            return pio.to_image(fig, format='png', width=width, height=height, scale=1.5)
+    except Exception as exc:
+        logger.warning(f"⚠️ Plotly to_image para mapa de localização falhou ({exc}). Gerando mapa via Pillow...")
+
+    try:
+        return _desenhar_mapa_local_pillow(
+            coords=coords,
+            localizacao=localizacao,
+            idw_meta=idw_meta,
+            station_info=station_info,
+            search_radius_km=search_radius_km,
+            lang=lang,
+            width=width,
+            height=height,
+        )
+    except Exception as exc2:
+        logger.warning(f"⚠️ Fallback Pillow do mapa falhou: {exc2}")
+        return None
+
 # ── API Integration (ANA HidroWebService) ─────────────────────────────────────
 
 # Cache de token compartilhado entre instâncias. A ANA monitora requisições de
@@ -1613,8 +1904,19 @@ def compute_gumbel_memory(series_df: pd.DataFrame, lang: str = 'PT') -> dict:
       - 'chow_rows' : list of dicts — Ven Te Chow results per TR
     """
     precip_col = t('col_precip', lang)
-    data_col   = t('col_data',   lang)
-    ano_col    = t('col_ano',    lang)
+    if precip_col not in series_df.columns:
+        for c in ('Precipitacao', 'precipitacao', 'Precip', 'precip', 'Chuva'):
+            if c in series_df.columns:
+                precip_col = c
+                break
+
+    data_col = t('col_data', lang)
+    ano_col  = t('col_ano',  lang)
+    if ano_col not in series_df.columns:
+        for c in ('Ano', 'ano', 'Year', 'year'):
+            if c in series_df.columns:
+                ano_col = c
+                break
 
     raw_values = series_df[precip_col].dropna().values.tolist()
     dates      = series_df[data_col].astype(str).tolist() if data_col in series_df.columns else \

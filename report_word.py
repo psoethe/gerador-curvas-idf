@@ -15,7 +15,10 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 from i18n import t
-from calculations import DURATIONS, SHERMAN_TYPICAL_RANGES
+from calculations import (
+    DURATIONS, SHERMAN_TYPICAL_RANGES,
+    gerar_png_mapa_local, gerar_png_mapa_isozonas,
+)
 
 logger = logging.getLogger("viktor")
 
@@ -311,6 +314,8 @@ def generate_word_report(
     lang: str = 'PT',
     coords: tuple[float, float] | None = None,
     idw_meta: dict | None = None,
+    station_info: dict | None = None,
+    search_radius_km: float = 35.0,
 ) -> bytes:
     """
     Generate a complete Word (.docx) Memorial de Calculo / Calculation Report.
@@ -530,7 +535,25 @@ def generate_word_report(
         ).italic = True
         p_nota.runs[0].font.size = Pt(8.5)
         p_nota.runs[0].font.color.rgb = _GREY_DARK
-    _add_figure(doc, png_hist, 'Figura 1 - Serie Historica de Precipitacao Maxima Diaria Anual')
+
+    # Mapa de Localização da Obra e Estações Pluviométricas
+    png_mapa_local = gerar_png_mapa_local(
+        coords=coords,
+        localizacao=localizacao,
+        idw_meta=idw_meta,
+        station_info=station_info,
+        search_radius_km=search_radius_km,
+        lang=lang,
+    )
+    if png_mapa_local:
+        cap_loc = (
+            f"Figura 1 - Mapa de Localizacao da Obra ({localizacao or 'Projeto'}) e Estacoes Pluviometricas (Raio: {search_radius_km:.0f} km)"
+            if is_pt else
+            f"Figure 1 - Project Location Map ({localizacao or 'Project'}) and Rain Gauge Stations ({search_radius_km:.0f} km radius)"
+        )
+        _add_figure(doc, png_mapa_local, cap_loc, width_cm=15.0)
+
+    _add_figure(doc, png_hist, 'Figura 2 - Serie Historica de Precipitacao Maxima Diaria Anual' if is_pt else 'Figure 2 - Annual Maximum Daily Precipitation Historical Series')
     doc.add_page_break()
 
     # ── PASSO 2 — Analise de Gumbel ───────────────────────────────────────────
@@ -540,7 +563,7 @@ def generate_word_report(
     _para(doc, f'mu = {mu:.3f} mm  |  sigma = {sigma:.3f} mm')
     doc.add_paragraph()
     _add_df_table(doc, gumbel_df)
-    _add_figure(doc, png_gumbel, 'Figura 2 - Analise de Gumbel')
+    _add_figure(doc, png_gumbel, 'Figura 3 - Analise de Gumbel' if is_pt else 'Figure 3 - Gumbel Analysis')
     doc.add_page_break()
 
     # ── PASSO 3 — Desagregacao de Taborga ────────────────────────────────────
@@ -548,6 +571,17 @@ def generate_word_report(
                           if is_pt else 'Step 3 - Taborga Disaggregation'))
     _para(doc, f'Isozona: {isozona}', bold=True, color=_BLUE_DARK)
     doc.add_paragraph()
+
+    # Mapa Oficial de Isozonas com Pin do Projeto
+    png_mapa_isozona = gerar_png_mapa_isozonas(coords)
+    if png_mapa_isozona:
+        cap_iso = (
+            f"Figura - Mapa Oficial de Isozonas de Chuvas Intensas do Brasil (Taborga, 1974) — Posicao da Obra (Isozona {isozona})"
+            if is_pt else
+            f"Figure - Official Isozone Map of Heavy Rainfall in Brazil (Taborga, 1974) — Project Location (Isozone {isozona})"
+        )
+        _add_figure(doc, png_mapa_isozona, cap_iso, width_cm=11.5)
+
     k_rows = tab_mem['k_rows']
     if k_rows:
         k_df = pd.DataFrame(k_rows)
