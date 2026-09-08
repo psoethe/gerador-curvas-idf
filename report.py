@@ -21,7 +21,7 @@ from reportlab.platypus import (
 )
 from reportlab.platypus.flowables import Flowable
 from reportlab.pdfgen import canvas as rl_canvas
-from calculations import DURATIONS, ISOZONA_CONSTANTS, RETURN_PERIODS
+from calculations import DURATIONS, ISOZONA_CONSTANTS, RETURN_PERIODS, SHERMAN_TYPICAL_RANGES
 from i18n import t
 
 logger = logging.getLogger("viktor")
@@ -1549,9 +1549,11 @@ def generate_pdf_report(
         return tbl
 
     half_w = (CONTENT_W - 0.6 * cm) / 2
+    lbl_err_med = 'Erro Médio Celular' if is_pt else 'Mean Cell Error'
+    val_err_med = f"{sherman.get('erro_medio_celula', 0.0):.2f}%"
     metrics_row = Table(
         [[_metric_cell('RMSE (mm/h)', f'{rmse_v:.4f}', half_w),
-          _metric_cell('NSE', f'{nse_v:.4f}', half_w)]],
+          _metric_cell(lbl_err_med, val_err_med, half_w)]],
         colWidths=[half_w + 0.3 * cm, half_w + 0.3 * cm],
     )
     metrics_row.setStyle(TableStyle([
@@ -1565,19 +1567,24 @@ def generate_pdf_report(
     story.append(metrics_row)
     story.append(Spacer(1, 0.3 * cm))
 
-    # Tabela estruturada de parâmetros de Sherman com IC 95% e métricas celulares
+    # Tabela estruturada de parâmetros de Sherman com IC 95% e faixas típicas da literatura
     sh_hdr = ['Parâmetro', 'Valor', 'Erro Padrão', 'IC 95%', 'Faixa Plausível'] if is_pt else ['Parameter', 'Value', 'Std Error', '95% CI', 'Plausible Range']
     ci_a_str = f"[{sherman.get('ci_A', (0,0))[0]:.1f}, {sherman.get('ci_A', (0,0))[1]:.1f}]" if 'ci_A' in sherman else '—'
     ci_b_str = f"[{sherman.get('ci_B', (0,0))[0]:.4f}, {sherman.get('ci_B', (0,0))[1]:.4f}]" if 'ci_B' in sherman else '—'
     ci_c_str = f"[{sherman.get('ci_C', (0,0))[0]:.2f}, {sherman.get('ci_C', (0,0))[1]:.2f}]" if 'ci_C' in sherman else '—'
     ci_d_str = f"[{sherman.get('ci_D', (0,0))[0]:.4f}, {sherman.get('ci_D', (0,0))[1]:.4f}]" if 'ci_D' in sherman else '—'
 
+    rng_a = f"{SHERMAN_TYPICAL_RANGES['A'][0]:g} a {SHERMAN_TYPICAL_RANGES['A'][1]:g}"
+    rng_b = f"{SHERMAN_TYPICAL_RANGES['B'][0]:g} a {SHERMAN_TYPICAL_RANGES['B'][1]:g}"
+    rng_c = f"{SHERMAN_TYPICAL_RANGES['C'][0]:g} a {SHERMAN_TYPICAL_RANGES['C'][1]:g}"
+    rng_d = f"{SHERMAN_TYPICAL_RANGES['D'][0]:g} a {SHERMAN_TYPICAL_RANGES['D'][1]:g}"
+
     sh_rows = [
         [Paragraph(f'<b>{h}</b>', st['Normal']) for h in sh_hdr],
-        [Paragraph('A (constante)', st['Normal']), Paragraph(f'{A_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_A', 0.0):.4f}", st['Normal']), Paragraph(ci_a_str, st['Normal']), Paragraph('10 a 20000', st['Normal'])],
-        [Paragraph('B (expoente TR)', st['Normal']), Paragraph(f'{B_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_B', 0.0):.4f}", st['Normal']), Paragraph(ci_b_str, st['Normal']), Paragraph('0,10 a 0,40', st['Normal'])],
-        [Paragraph('C (ajuste tempo)', st['Normal']), Paragraph(f'{C_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_C', 0.0):.4f}", st['Normal']), Paragraph(ci_c_str, st['Normal']), Paragraph('5,0 a 60,0', st['Normal'])],
-        [Paragraph('D (expoente tempo)', st['Normal']), Paragraph(f'{D_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_D', 0.0):.4f}", st['Normal']), Paragraph(ci_d_str, st['Normal']), Paragraph('0,55 a 0,95', st['Normal'])],
+        [Paragraph('A (constante / constant)', st['Normal']), Paragraph(f'{A_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_A', 0.0):.4f}", st['Normal']), Paragraph(ci_a_str, st['Normal']), Paragraph(rng_a, st['Normal'])],
+        [Paragraph('B (expoente TR / exponent)', st['Normal']), Paragraph(f'{B_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_B', 0.0):.4f}", st['Normal']), Paragraph(ci_b_str, st['Normal']), Paragraph(rng_b, st['Normal'])],
+        [Paragraph('C (ajuste tempo / time adj)', st['Normal']), Paragraph(f'{C_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_C', 0.0):.4f}", st['Normal']), Paragraph(ci_c_str, st['Normal']), Paragraph(rng_c, st['Normal'])],
+        [Paragraph('D (expoente tempo / exponent)', st['Normal']), Paragraph(f'{D_v:.4f}', st['Normal']), Paragraph(f"{sherman.get('se_D', 0.0):.4f}", st['Normal']), Paragraph(ci_d_str, st['Normal']), Paragraph(rng_d, st['Normal'])],
     ]
     sh_tbl = Table(sh_rows, colWidths=[4.0 * cm, 3.0 * cm, 3.0 * cm, 4.0 * cm, 3.0 * cm])
     sh_tbl.setStyle(TableStyle([

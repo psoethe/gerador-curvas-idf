@@ -11,7 +11,9 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 import os
+import calendar
 import colorsys
+from collections import Counter
 from datetime import datetime
 from PIL import Image, ImageDraw
 from scipy.optimize import curve_fit
@@ -78,6 +80,23 @@ ISOZONA_CONSTANTS = {
 ISOZONAS = list(ISOZONA_CONSTANTS.keys())
 ISOZONA_MAP_PATH = os.path.join(os.path.dirname(__file__), "assets", "isozonas_brasil.png")
 
+# ── Bounds e Faixas da Equação de Sherman ─────────────────────────────────────
+# Bounds do otimizador (espaço de busca admissível para convergência numérica da regressão)
+SHERMAN_OPTIMIZER_BOUNDS = {
+    'A': (10.0, 20000.0),
+    'B': (0.08, 0.45),
+    'C': (3.0, 70.0),
+    'D': (0.50, 0.98),
+}
+
+# Faixas de plausibilidade hidrológica típica da literatura (para alertas ao projetista)
+SHERMAN_TYPICAL_RANGES = {
+    'A': (50.0, 10000.0),
+    'B': (0.12, 0.35),
+    'C': (8.0, 45.0),
+    'D': (0.60, 0.90),
+}
+
 
 def coord_para_pixel_isozona(lat: float, lon: float) -> tuple[int, int]:
     """
@@ -96,12 +115,14 @@ def classificar_cor_isozona(r: int, g: int, b: int) -> str:
     h, s, v = colorsys.rgb_to_hsv(rf, gf, bf)
     deg = h * 360.0
 
-    # Fundo bege ou branco (fora do território brasileiro)
-    if v > 0.80 and s < 0.20:
-        return 'BACKGROUND'
-    # Linhas de grade ou preto
+    # Fundo bege ou branco (fora do território brasileiro) ou linhas/tons de cinza
+    if s < 0.20:
+        if v > 0.80:
+            return 'BACKGROUND'
+        return 'GRID'
+    # Linhas de grade, contornos, textos ou preto (nunca classificar como C!)
     if v < 0.28:
-        return 'C'  # Preto = Isozona C
+        return 'GRID'
 
     if deg < 15 or deg >= 340:
         return 'B'  # Vermelho = Isozona B
@@ -121,34 +142,34 @@ def classificar_cor_isozona(r: int, g: int, b: int) -> str:
     return 'UNKNOWN'
 
 
-def detectar_isozona_coordenadas(lat: float, lon: float, img_path: str = None, retornar_coords: bool = False) -> str | tuple[str, int, int]:
+def detectar_isozona_coordenadas(
+    lat: float,
+    lon: float,
+    img_path: str = None,
+    retornar_coords: bool = False,
+) -> str | tuple[str, int, int, float]:
     """
     Identifica a Isozona de Taborga por amostragem de cor sob o ponto (lat, lon)
-    no mapa de isozonas. Retorna 'A'-'H' (ou (isozona, x_px, y_px) se retornar_coords=True).
+    no mapa de isozonas com votação por maioria em janela vizinha.
+    Retorna a sigla da Isozona ('A'-'H') ou 'FALLBACK' se não identificada.
     """
     path = img_path or ISOZONA_MAP_PATH
     x, y = coord_para_pixel_isozona(lat, lon)
 
-    def _ret(c):
-        return (c, x, y) if retornar_coords else c
+    def _ret(c, conf=0.0):
+        return (c, x, y, conf) if retornar_coords else c
 
     if not os.path.exists(path):
-        # Fallback geográfico regional se a imagem não estiver disponível
-        if lat > -12.0 and lon < -48.0:
-            return _ret('F')
-        if lat < -27.0:
-            return _ret('A')
-        if -27.0 <= lat <= -20.0 and -53.0 <= lon <= -41.0:
-            return _ret('B')
-        return _ret('B')
+        return _ret('FALLBACK', 0.0)
 
     try:
         img = Image.open(path).convert('RGB')
         arr = np.array(img)
         w, h = img.size
 
-        # Busca em raio crescente (até 20px) para ignorar linhas de grade pretas e costas
-        for r in range(0, 22):
+        # Amostragem em janela com votação por maioria ignorando GRID e BACKGROUND
+        votos = []
+        for r in range(0, 16):
             for dy in range(-r, r + 1):
                 for dx in range(-r, r + 1):
                     if max(abs(dx), abs(dy)) != r:
@@ -157,11 +178,21 @@ def detectar_isozona_coordenadas(lat: float, lon: float, img_path: str = None, r
                     if 0 <= px < w and 0 <= py < h:
                         c_iso = classificar_cor_isozona(*arr[py, px])
                         if c_iso in ISOZONA_CONSTANTS:
-                            return _ret(c_iso)
+                            votos.append(c_iso)
+            if len(votos) >= 9:
+                break
+
+        if votos:
+            contagem = Counter(votos)
+            melhor_iso, num_votos = contagem.most_common(1)[0]
+            confianca = num_votos / len(votos)
+            if confianca >= 0.40 and num_votos >= 2:
+                return _ret(melhor_iso, round(confianca, 2))
+
     except Exception as exc:
         logger.warning(f"Erro ao ler imagem de isozonas: {exc}")
 
-    return _ret('B')
+    return _ret('FALLBACK', 0.0)
 
 
 def desenhar_pin_mapa_isozonas(lat: float, lon: float, img_path: str = None) -> Image.Image:
@@ -853,9 +884,23 @@ def interpolar_series_idw(
         if w < 0.02:
             avisos_idw.append(t('idw_weight_alert', lang).format(cod, w * 100.0))
 
-    dists = [distancias_km.get(c, 999.0) for c in estacoes]
-    if max(dists) - min(dists) < 2.0 and min(dists) < 3.0:
-        avisos_idw.append(t('idw_colocated_alert', lang))
+    # Checagem de co-localização / arranjo degenerado
+    colocadas = False
+    if len(estacoes) >= 3 and n_eff < 2.0:
+        colocadas = True
+    elif len(estacoes) >= 2:
+        relevantes = [c for c in estacoes if pesos_globais.get(c, 0) >= 0.02]
+        dists_rel = [distancias_km.get(c, 999.0) for c in relevantes]
+        for i in range(len(dists_rel)):
+            for j in range(i + 1, len(dists_rel)):
+                if abs(dists_rel[i] - dists_rel[j]) < 2.0 and min(dists_rel[i], dists_rel[j]) < 3.0:
+                    colocadas = True
+                    break
+            if colocadas:
+                break
+
+    if colocadas:
+        avisos_idw.append(t('idw_colocated_alert', lang).format(n_eff))
 
     # Interpola ano a ano considerando as estações que possuem dado em cada ano
     anos_por_estacao = {}
@@ -1233,7 +1278,7 @@ def gumbel_analysis(series: pd.DataFrame, lang: str = 'PT') -> tuple[pd.DataFram
 def analisar_qualidade_serie(
     series_df: pd.DataFrame,
     limiar_cobertura_pct: float = 90.0,
-    excluir_incompletos: bool = False,
+    excluir_incompletos: bool = True,
     lang: str = 'PT',
 ) -> dict:
     """
@@ -1266,7 +1311,8 @@ def analisar_qualidade_serie(
             ano = int(row[col_a])
             val = float(row[col_p])
             dv = float(row['DiasValidos'])
-            cob = min(100.0, (dv / 365.25) * 100.0)
+            dias_ano = 366.0 if calendar.isleap(ano) else 365.0
+            cob = min(100.0, (dv / dias_ano) * 100.0)
             if cob < limiar_cobertura_pct:
                 anos_descartados.append({
                     'ano': ano,
@@ -1499,31 +1545,33 @@ def verificar_consistencia_fisica_idf(
                     violacoes_freq.append({'t': t_dur, 'tr1': col1, 'i1': i1, 'tr2': col2, 'i2': i2, 'msg': msg})
                     mensagens.append(msg)
 
-    # 3. Limites de parâmetros de Sherman
-    B = sherman_params.get('B', 0.2)
-    C = sherman_params.get('C', 15.0)
-    D = sherman_params.get('D', 0.8)
-
-    if not (0.08 <= B <= 0.45):
-        msg = t('param_out_range', lang).format('B', B, '0,08', '0,45')
-        violacoes_param.append(msg)
-        mensagens.append(msg)
-    if not (3.0 <= C <= 70.0):
-        msg = t('param_out_range', lang).format('C', C, '3,0', '70,0')
-        violacoes_param.append(msg)
-        mensagens.append(msg)
-    if not (0.50 <= D <= 0.98):
-        msg = t('param_out_range', lang).format('D', D, '0,50', '0,98')
-        violacoes_param.append(msg)
-        mensagens.append(msg)
+    # 3. Limites de parâmetros de Sherman (comparados contra faixas típicas da literatura)
+    for p_name in ('A', 'B', 'C', 'D'):
+        val = sherman_params.get(p_name)
+        if val is not None:
+            low, high = SHERMAN_TYPICAL_RANGES[p_name]
+            if not (low <= val <= high):
+                low_str = f"{low:g}"
+                high_str = f"{high:g}"
+                msg = t('param_out_range', lang).format(p_name, val, low_str, high_str)
+                violacoes_param.append({
+                    'param': p_name,
+                    'val': val,
+                    'low': low,
+                    'high': high,
+                    'msg': msg,
+                })
+                mensagens.append(msg)
 
     for p_name, b_val in sherman_params.get('bounds_touched', []):
         msg = t('bound_touch_alert', lang).format(p_name, sherman_params.get(p_name, 0.0), b_val)
         mensagens.append(msg)
 
     is_valid = len(violacoes_tempo) == 0 and len(violacoes_freq) == 0 and len(violacoes_param) == 0
+    status = 'OK' if is_valid else 'VIOLATION'
     return {
         'is_valid': is_valid,
+        'status': status,
         'violacoes_tempo': violacoes_tempo,
         'violacoes_freq': violacoes_freq,
         'violacoes_param': violacoes_param,
@@ -1725,6 +1773,28 @@ def compute_taborga_memory(gumbel_memory: dict, isozona: str, lang: str = 'PT') 
     }
 
 
+def _verificar_toque_bound(val: float, low: float, high: float, tol: float = 0.005) -> tuple[bool, float | None]:
+    """
+    Verifica se o parâmetro ajustado 'val' tocou ou se aproximou perigosamente do limite
+    inferior 'low' ou superior 'high' com tolerância relativa 'tol' (padrão 0,5%).
+    """
+    if low != 0:
+        if abs(val - low) <= tol * abs(low) or val < low:
+            return True, low
+    else:
+        if abs(val - low) <= tol:
+            return True, low
+
+    if high != 0:
+        if abs(val - high) <= tol * abs(high) or val > high:
+            return True, high
+    else:
+        if abs(val - high) <= tol:
+            return True, high
+
+    return False, None
+
+
 def fit_sherman(
     idf_df: pd.DataFrame,
     gumbel_df: pd.DataFrame = None,
@@ -1804,7 +1874,10 @@ def fit_sherman(
     else:
         # Ajuste em espaço log com bounds hidrológicos da literatura
         p0_log = [float(np.log(1200.0)), 0.22, 15.0, 0.80]
-        bounds_log = ([float(np.log(10.0)), 0.08, 3.0, 0.50], [float(np.log(20000.0)), 0.45, 70.0, 0.98])
+        bounds_log = (
+            [float(np.log(SHERMAN_OPTIMIZER_BOUNDS['A'][0])), SHERMAN_OPTIMIZER_BOUNDS['B'][0], SHERMAN_OPTIMIZER_BOUNDS['C'][0], SHERMAN_OPTIMIZER_BOUNDS['D'][0]],
+            [float(np.log(SHERMAN_OPTIMIZER_BOUNDS['A'][1])), SHERMAN_OPTIMIZER_BOUNDS['B'][1], SHERMAN_OPTIMIZER_BOUNDS['C'][1], SHERMAN_OPTIMIZER_BOUNDS['D'][1]],
+        )
         try:
             popt_log, pcov_log = curve_fit(
                 sherman_log_model,
@@ -1822,25 +1895,11 @@ def fit_sherman(
             se_A = float(A * se_ln_A)  # método delta
 
             # Verificação de bounds tocados (margem de 0.5%)
-            if ln_A <= bounds_log[0][0] * 1.005 if bounds_log[0][0] > 0 else bounds_log[0][0] * 0.995:
-                bounds_touched.append(('A', 10.0))
-            elif ln_A >= bounds_log[1][0] * 0.995:
-                bounds_touched.append(('A', 20000.0))
-
-            if B <= bounds_log[0][1] * 1.005:
-                bounds_touched.append(('B', bounds_log[0][1]))
-            elif B >= bounds_log[1][1] * 0.995:
-                bounds_touched.append(('B', bounds_log[1][1]))
-
-            if C <= bounds_log[0][2] * 1.005:
-                bounds_touched.append(('C', bounds_log[0][2]))
-            elif C >= bounds_log[1][2] * 0.995:
-                bounds_touched.append(('C', bounds_log[1][2]))
-
-            if D <= bounds_log[0][3] * 1.005:
-                bounds_touched.append(('D', bounds_log[0][3]))
-            elif D >= bounds_log[1][3] * 0.995:
-                bounds_touched.append(('D', bounds_log[1][3]))
+            for p_name, val in [('A', A), ('B', B), ('C', C), ('D', D)]:
+                low, high = SHERMAN_OPTIMIZER_BOUNDS[p_name]
+                touched, b_val = _verificar_toque_bound(val, low, high)
+                if touched:
+                    bounds_touched.append((p_name, b_val))
 
         except Exception as e:
             logger.warning(f"Ajuste log-space não convergiu: {e}")
@@ -1901,7 +1960,7 @@ def run_full_analysis(
     year_start: int | None = None,
     year_end: int | None = None,
     limiar_cobertura_pct: float = 90.0,
-    excluir_incompletos: bool = False,
+    excluir_incompletos: bool = True,
     modo_ajuste_sherman: str = 'log',
 ) -> dict:
     """

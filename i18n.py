@@ -427,8 +427,8 @@ LABELS: dict[str, dict[str, str]] = {
     'diag_coverage_help':   {'PT': 'Anos civis com menos dias válidos que este percentual de 365 dias são automaticamente desconsiderados do cálculo e documentados no memorial.',
                              'EN': 'Calendar years with fewer valid days than this percentage of 365 days are automatically excluded and recorded in report.'},
     'diag_cv_label':        {'PT': 'Coeficiente de Variação (CV = σ/μ)', 'EN': 'Coefficient of Variation (CV = σ/μ)'},
-    'diag_cv_alert':        {'PT': 'Coeficiente de Variação (CV = {:.2f}) fora da faixa usual para máximas diárias no Brasil (0,15 a 0,30). Indica grande dispersão ou anos com falhas de registro.',
-                             'EN': 'Coefficient of Variation (CV = {:.2f}) outside usual Brazilian range (0.15 to 0.30). Indicates high dispersion or incomplete years.'},
+    'diag_cv_alert':        {'PT': 'Coeficiente de Variação (CV = {:.2f}) fora da faixa de referência empírica usual (0,15 a 0,30). Em regiões semiáridas ou de alta variabilidade climática, valores até 0,50 são comuns; em outras regiões pode indicar grande dispersão ou falhas de registro.',
+                             'EN': 'Coefficient of Variation (CV = {:.2f}) outside typical empirical reference range (0.15 to 0.30). In semiarid or high-variability climates, values up to 0.50 are common; elsewhere it may indicate high dispersion or data gaps.'},
     'diag_cv_ok':           {'PT': 'Coeficiente de Variação (CV = {:.2f}) dentro da faixa de plausibilidade esperada (0,15 a 0,30).',
                              'EN': 'Coefficient of Variation (CV = {:.2f}) within expected plausibility range (0.15 to 0.30).'},
     'diag_mk_title':        {'PT': 'Teste de Tendência e Estacionariedade (Mann-Kendall)',
@@ -469,8 +469,8 @@ LABELS: dict[str, dict[str, str]] = {
     'isozona_manual_badge': {'PT': 'Isozona {} (alterada manualmente)',  'EN': 'Isozone {} (manually overridden)'},
     'idw_weight_alert':     {'PT': '⚠️ Estação {} com peso ponderado de apenas {:.1f}% (< 2%). Recomenda-se removê-la da seleção IDW.',
                              'EN': '⚠️ Station {} has residual weight of only {:.1f}% (< 2%). Consider removing it from IDW selection.'},
-    'idw_colocated_alert':  {'PT': '⚠️ Todas as estações selecionadas estão a menos de 2 km entre si (co-localizadas). O IDW opera como média local sem agregar informação espacial.',
-                             'EN': '⚠️ Selected stations are within 2 km of each other (co-located). IDW behaves as a local average without adding spatial gradient.'},
+    'idw_colocated_alert':  {'PT': '⚠️ Arranjo IDW com co-localização ou peso hiperconcentrado (N_eff = {:.2f} < 2,0 ou estações principais a menos de 2 km). O IDW opera como média local sem agregar gradiente espacial efetivo.',
+                             'EN': '⚠️ IDW arrangement with co-location or hyper-concentrated weight (N_eff = {:.2f} < 2.0 or main stations < 2 km apart). IDW operates as a local average without adding effective spatial gradient.'},
     'idw_neff_label':       {'PT': 'Número Efetivo de Estações (N_eff)', 'EN': 'Effective Number of Stations (N_eff)'},
 
 }

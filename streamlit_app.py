@@ -41,6 +41,8 @@ from calculations import (
     ISOZONAS,
     DURATIONS,
     RETURN_PERIODS,
+    SHERMAN_OPTIMIZER_BOUNDS,
+    SHERMAN_TYPICAL_RANGES,
 )
 from plotting import (
     fig_historical_series,
@@ -476,7 +478,7 @@ def init_state():
     st.session_state.setdefault('isozona_escolhida', 'B')
     st.session_state.setdefault('isozona_origem', 'Automática (detectada no mapa)')
     st.session_state.setdefault('limiar_cobertura_pct', 90.0)
-    st.session_state.setdefault('excluir_incompletos', False)
+    st.session_state.setdefault('excluir_incompletos', True)
     st.session_state.setdefault('modo_ajuste_sherman', 'log')
     st.session_state.setdefault('year_start', None)
     st.session_state.setdefault('year_end', None)
@@ -635,9 +637,14 @@ if curr_s == 1:
                     endereco_digitado.strip() + (f" - {nova_uf}" if nova_uf not in endereco_digitado else "")
                 )
                 iso_det = detectar_isozona_coordenadas(lat_f, lon_f)
-                st.session_state.isozona_escolhida = iso_det
-                st.session_state.isozona_origem = f"Automática ({iso_det})"
-                st.success(f"📍 {addr_f} (UF: **{nova_uf}** | Isozona: **{iso_det}**)")
+                if iso_det == 'FALLBACK':
+                    st.session_state.isozona_escolhida = 'B'
+                    st.session_state.isozona_origem = "Não detectada no mapa (adotado padrão B — favor selecionar)"
+                    st.success(f"📍 {addr_f} (UF: **{nova_uf}** | Isozona padrão: **B**)")
+                else:
+                    st.session_state.isozona_escolhida = iso_det
+                    st.session_state.isozona_origem = f"Automática ({iso_det})"
+                    st.success(f"📍 {addr_f} (UF: **{nova_uf}** | Isozona: **{iso_det}**)")
                 st.rerun()
             else:
                 st.warning("Endereço não localizado. Tente digitar o nome da cidade e estado (ex.: Recife, PE ou Taubaté, SP).")
@@ -653,8 +660,12 @@ if curr_s == 1:
         st.session_state.uf_sel = nova_uf
         st.session_state.proj_loc = novo_loc
         iso_det = detectar_isozona_coordenadas(lat_val, lon_val)
-        st.session_state.isozona_escolhida = iso_det
-        st.session_state.isozona_origem = f"Automática ({iso_det})"
+        if iso_det == 'FALLBACK':
+            st.session_state.isozona_escolhida = 'B'
+            st.session_state.isozona_origem = "Não detectada no mapa (adotado padrão B — favor selecionar)"
+        else:
+            st.session_state.isozona_escolhida = iso_det
+            st.session_state.isozona_origem = f"Automática ({iso_det})"
         st.rerun()
 
     raio_km = c_raio.slider(
@@ -837,8 +848,12 @@ if curr_s == 1:
             st.session_state.uf_sel = nova_uf
             st.session_state.proj_loc = novo_loc
             iso_det = detectar_isozona_coordenadas(c_lat, c_lon)
-            st.session_state.isozona_escolhida = iso_det
-            st.session_state.isozona_origem = f"Automática ({iso_det})"
+            if iso_det == 'FALLBACK':
+                st.session_state.isozona_escolhida = 'B'
+                st.session_state.isozona_origem = "Não detectada no mapa (adotado padrão B — favor selecionar)"
+            else:
+                st.session_state.isozona_escolhida = iso_det
+                st.session_state.isozona_origem = f"Automática ({iso_det})"
             st.rerun()
 
     with col_isozona:
@@ -848,15 +863,27 @@ if curr_s == 1:
             st.image(img_pin, caption="Mapa Oficial de Isozonas de Chuvas Intensas do Brasil (Taborga, 1974)", use_container_width=True)
 
         iso_det = detectar_isozona_coordenadas(st.session_state.proj_lat, st.session_state.proj_lon)
-        idx_padrao = ISOZONAS.index(st.session_state.isozona_escolhida) if st.session_state.isozona_escolhida in ISOZONAS else (ISOZONAS.index(iso_det) if iso_det in ISOZONAS else 1)
-        iso_sel = st.selectbox(f"{t('isozona_label', lang)} (A a H)", ISOZONAS, index=idx_padrao)
-        if iso_sel != iso_det:
-            st.caption(f"✏️ **{t('isozona_manual_badge', lang).format(iso_sel)}**")
-            st.session_state.isozona_origem = f"Manual ({iso_sel}) - Sobrescrita"
+        if iso_det == 'FALLBACK':
+            st.warning("⚠️ Não foi possível identificar com segurança a Isozona no mapa nas coordenadas informadas (pixel de fronteira, grade ou fora dos limites). Adotou-se **Isozona B** como padrão — confirme ou selecione a Isozona correta abaixo.")
+            idx_padrao = ISOZONAS.index(st.session_state.isozona_escolhida) if st.session_state.isozona_escolhida in ISOZONAS else 1
+            iso_sel = st.selectbox(f"{t('isozona_label', lang)} (A a H)", ISOZONAS, index=idx_padrao)
+            if iso_sel != 'B' or (st.session_state.isozona_origem and st.session_state.isozona_origem.startswith("Manual")):
+                st.caption(f"✏️ **{t('isozona_manual_badge', lang).format(iso_sel)}**")
+                st.session_state.isozona_origem = f"Manual ({iso_sel}) - Selecionada pelo projetista"
+            else:
+                st.caption("⚠️ Padrão Isozona B adotado (não detectada no mapa)")
+                st.session_state.isozona_origem = "Não detectada no mapa (adotado padrão B — favor selecionar)"
+            st.session_state.isozona_escolhida = iso_sel
         else:
-            st.caption(f"🎯 **{t('isozona_auto_badge', lang).format(iso_det)}**")
-            st.session_state.isozona_origem = f"Automática ({iso_det})"
-        st.session_state.isozona_escolhida = iso_sel
+            idx_padrao = ISOZONAS.index(st.session_state.isozona_escolhida) if st.session_state.isozona_escolhida in ISOZONAS else ISOZONAS.index(iso_det)
+            iso_sel = st.selectbox(f"{t('isozona_label', lang)} (A a H)", ISOZONAS, index=idx_padrao)
+            if iso_sel != iso_det:
+                st.caption(f"✏️ **{t('isozona_manual_badge', lang).format(iso_sel)}**")
+                st.session_state.isozona_origem = f"Manual ({iso_sel}) - Sobrescrita"
+            else:
+                st.caption(f"🎯 **{t('isozona_auto_badge', lang).format(iso_det)}**")
+                st.session_state.isozona_origem = f"Automática ({iso_det})"
+            st.session_state.isozona_escolhida = iso_sel
 
     st.divider()
     if st.button(t('btn_confirm_loc', lang), type='primary', use_container_width=True):
@@ -1073,9 +1100,23 @@ elif curr_s == 2:
                     for c_cod, w_val in pesos_preview.items():
                         if w_val < 2.0:
                             st.warning(t('idw_weight_alert', lang).format(c_cod, w_val))
-                    dists_list = list(dists_map.values())
-                    if len(dists_list) > 1 and max(dists_list) - min(dists_list) < 2.0 and min(dists_list) < 3.0:
-                        st.info(t('idw_colocated_alert', lang))
+                    # Checagem de co-localização / arranjo degenerado no preview
+                    colocadas_preview = False
+                    if len(estacoes_sel) >= 3 and n_eff_preview < 2.0:
+                        colocadas_preview = True
+                    elif len(estacoes_sel) >= 2:
+                        relevantes = [e['codigo'] for e in estacoes_sel if pesos_preview.get(e['codigo'], 0) >= 2.0]
+                        dists_rel = [dists_map[c] for c in relevantes]
+                        for i in range(len(dists_rel)):
+                            for j in range(i + 1, len(dists_rel)):
+                                if abs(dists_rel[i] - dists_rel[j]) < 2.0 and min(dists_rel[i], dists_rel[j]) < 3.0:
+                                    colocadas_preview = True
+                                    break
+                            if colocadas_preview:
+                                break
+
+                    if colocadas_preview:
+                        st.info(t('idw_colocated_alert', lang).format(n_eff_preview))
 
                     if st.button(L['btn_download_idw'], type='primary', use_container_width=True):
                         try:
@@ -1389,22 +1430,30 @@ elif curr_s == 4:
                 st.rerun()
 
         cons = results.get('physical_consistency', {})
-        if cons.get('status') == 'OK':
+        is_cons_ok = bool(cons.get('is_valid', False) or cons.get('status') == 'OK')
+        if is_cons_ok:
             st.success(t('phys_cons_ok', lang))
         else:
-            with st.expander(f"⚠️ {t('phys_cons_title', lang)} — Informações Metodológicas", expanded=False):
+            st.error(f"🚨 **{t('phys_cons_title', lang)} — Violações de Consistência Detectadas**")
+            with st.container(border=True):
                 for v in cons.get('violacoes_tempo', []):
-                    st.caption(f"- {v}")
+                    msg = v.get('msg', str(v)) if isinstance(v, dict) else str(v)
+                    st.markdown(f"- {msg}")
                 for v in cons.get('violacoes_freq', []):
-                    st.caption(f"- {v}")
+                    msg = v.get('msg', str(v)) if isinstance(v, dict) else str(v)
+                    st.markdown(f"- {msg}")
+                for v in cons.get('violacoes_param', []):
+                    msg = v.get('msg', str(v)) if isinstance(v, dict) else str(v)
+                    st.markdown(f"- {msg}")
 
         sherman = results['sherman_params']
-        m1, m2, m3, m4, m5 = st.columns(5)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric(L['n_years'], results['n_samples'])
         m2.metric('μ (Gumbel)', f"{results['mu']:.2f} mm")
         m3.metric('σ (Gumbel)', f"{results['sigma']:.2f} mm")
         m4.metric('R² (Sherman)', f"{sherman['R²']:.4f}")
-        m5.metric('NSE (Sherman)', f"{sherman['NSE']:.4f}")
+        m5.metric('RMSE', f"{sherman['RMSE']:.2f} mm/h")
+        m6.metric('Erro Médio Celular', f"{sherman.get('erro_medio_celula', 0.0):.2f}%")
 
         fh, fg, fp, fi = figuras(results)
 
@@ -1446,8 +1495,9 @@ elif curr_s == 4:
             st.download_button(f"📥 {t('btn_dl_csv', lang)} (Gumbel)", data=csv_g, file_name="gumbel_analise.csv", mime="text/csv")
 
             st.plotly_chart(fp, use_container_width=True)
-            st.dataframe(results['disagg_df'], height=320, use_container_width=True, hide_index=True)
-            csv_d = results['disagg_df'].to_csv(index=False).encode('utf-8')
+            df_disagg_disp = results['disagg_df'].reset_index()
+            st.dataframe(df_disagg_disp, height=320, use_container_width=True, hide_index=True)
+            csv_d = df_disagg_disp.to_csv(index=False).encode('utf-8')
             st.download_button(f"📥 {t('btn_dl_csv', lang)} (Desagregação Taborga)", data=csv_d, file_name="desagregacao_taborga.csv", mime="text/csv")
 
             with st.expander("📐 " + t('gumbel_mem_card', lang), expanded=False):
@@ -1461,8 +1511,9 @@ elif curr_s == 4:
 
         with t3:
             st.plotly_chart(fi, use_container_width=True)
-            st.dataframe(results['idf_df'], height=320, use_container_width=True, hide_index=True)
-            csv_i = results['idf_df'].to_csv(index=False).encode('utf-8')
+            df_idf_disp = results['idf_df'].reset_index()
+            st.dataframe(df_idf_disp, height=320, use_container_width=True, hide_index=True)
+            csv_i = df_idf_disp.to_csv(index=False).encode('utf-8')
             st.download_button(f"📥 {t('btn_dl_csv', lang)} (Curvas IDF)", data=csv_i, file_name="curvas_idf.csv", mime="text/csv")
 
             A, B, C, D = sherman['A'], sherman['B'], sherman['C'], sherman['D']
@@ -1470,19 +1521,23 @@ elif curr_s == 4:
             st.latex(r"i = \frac{%.4f \cdot TR^{%.4f}}{(t + %.4f)^{%.4f}}" % (A, B, C, D))
 
             df_sherman_params = pd.DataFrame([
-                {'Parâmetro': 'A', 'Valor Ajustado': f"{A:.4f}", 'Erro Padrão': f"{sherman.get('se_A', 0.0):.4f}", 'IC 95% Inferior': f"{sherman.get('ci_A', (0,0))[0]:.2f}", 'IC 95% Superior': f"{sherman.get('ci_A', (0,0))[1]:.2f}", 'Faixa da Literatura': '10.0 a 20000.0'},
-                {'Parâmetro': 'B', 'Valor Ajustado': f"{B:.4f}", 'Erro Padrão': f"{sherman.get('se_B', 0.0):.4f}", 'IC 95% Inferior': f"{sherman.get('ci_B', (0,0))[0]:.4f}", 'IC 95% Superior': f"{sherman.get('ci_B', (0,0))[1]:.4f}", 'Faixa da Literatura': '0.08 a 0.45'},
-                {'Parâmetro': 'C', 'Valor Ajustado': f"{C:.4f}", 'Erro Padrão': f"{sherman.get('se_C', 0.0):.4f}", 'IC 95% Inferior': f"{sherman.get('ci_C', (0,0))[0]:.2f}", 'IC 95% Superior': f"{sherman.get('ci_C', (0,0))[1]:.2f}", 'Faixa da Literatura': '3.0 a 70.0'},
-                {'Parâmetro': 'D', 'Valor Ajustado': f"{D:.4f}", 'Erro Padrão': f"{sherman.get('se_D', 0.0):.4f}", 'IC 95% Inferior': f"{sherman.get('ci_D', (0,0))[0]:.4f}", 'IC 95% Superior': f"{sherman.get('ci_D', (0,0))[1]:.4f}", 'Faixa da Literatura': '0.50 a 0.98'},
+                {
+                    'Parâmetro': p,
+                    'Valor Ajustado': f"{sherman[p]:.4f}",
+                    'Erro Padrão': f"{sherman.get('se_' + p, 0.0):.4f}",
+                    'IC 95% Inferior': f"{sherman.get('ci_' + p, (0, 0))[0]:.4f}" if p in ('B', 'D') else f"{sherman.get('ci_' + p, (0, 0))[0]:.2f}",
+                    'IC 95% Superior': f"{sherman.get('ci_' + p, (0, 0))[1]:.4f}" if p in ('B', 'D') else f"{sherman.get('ci_' + p, (0, 0))[1]:.2f}",
+                    'Faixa Típica (Literatura)': f"{SHERMAN_TYPICAL_RANGES[p][0]:g} a {SHERMAN_TYPICAL_RANGES[p][1]:g}",
+                }
+                for p in ('A', 'B', 'C', 'D')
             ])
             st.dataframe(df_sherman_params, use_container_width=True, hide_index=True)
 
-            g1, g2, g3, g4, g5 = st.columns(5)
-            g1.metric('R²', f"{sherman['R²']:.4f}")
-            g2.metric('NSE', f"{sherman['NSE']:.4f}")
-            g3.metric('RMSE', f"{sherman['RMSE']:.2f} mm/h")
-            g4.metric(t('max_cell_error', lang), f"{sherman.get('erro_max_celula', 0.0):.2f}%")
-            g5.metric(t('mean_cell_error', lang), f"{sherman.get('erro_medio_celula', 0.0):.2f}%")
+            g1, g2, g3, g4 = st.columns(4)
+            g1.metric('R² (Determinação)', f"{sherman['R²']:.4f}")
+            g2.metric('RMSE', f"{sherman['RMSE']:.2f} mm/h")
+            g3.metric(t('max_cell_error', lang), f"{sherman.get('erro_max_celula', 0.0):.2f}%")
+            g4.metric(t('mean_cell_error', lang), f"{sherman.get('erro_medio_celula', 0.0):.2f}%")
 
             for p_name, b_val in sherman.get('bounds_touched', []):
                 st.warning(t('bound_touch_alert', lang).format(p_name, sherman[p_name], b_val))

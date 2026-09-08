@@ -15,6 +15,7 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 from i18n import t
+from calculations import DURATIONS, SHERMAN_TYPICAL_RANGES
 
 logger = logging.getLogger("viktor")
 
@@ -210,7 +211,9 @@ def _sherman_block(doc: Document, sherman: dict, lang: str) -> None:
     tbl2 = doc.add_table(rows=2, cols=2)
     tbl2.alignment = WD_TABLE_ALIGNMENT.CENTER
     tbl2.style = 'Table Grid'
-    for ci, (lbl, val) in enumerate([('RMSE (mm/h)', f'{rmse:.4f}'), ('NSE', f'{nse:.4f}')]):
+    lbl_err_med = 'Erro Médio Celular' if is_pt else 'Mean Cell Error'
+    val_err_med = f"{sherman.get('erro_medio_celula', 0.0):.2f}%"
+    for ci, (lbl, val) in enumerate([('RMSE (mm/h)', f'{rmse:.4f}'), (lbl_err_med, val_err_med)]):
         hc = tbl2.rows[0].cells[ci]
         hc.text = lbl
         hc.paragraphs[0].runs[0].bold = True
@@ -241,11 +244,16 @@ def _sherman_block(doc: Document, sherman: dict, lang: str) -> None:
     ci_c = f"[{sherman.get('ci_C', (0,0))[0]:.2f}, {sherman.get('ci_C', (0,0))[1]:.2f}]" if 'ci_C' in sherman else '—'
     ci_d = f"[{sherman.get('ci_D', (0,0))[0]:.4f}, {sherman.get('ci_D', (0,0))[1]:.4f}]" if 'ci_D' in sherman else '—'
 
+    rng_a = f"{SHERMAN_TYPICAL_RANGES['A'][0]:g} a {SHERMAN_TYPICAL_RANGES['A'][1]:g}"
+    rng_b = f"{SHERMAN_TYPICAL_RANGES['B'][0]:g} a {SHERMAN_TYPICAL_RANGES['B'][1]:g}"
+    rng_c = f"{SHERMAN_TYPICAL_RANGES['C'][0]:g} a {SHERMAN_TYPICAL_RANGES['C'][1]:g}"
+    rng_d = f"{SHERMAN_TYPICAL_RANGES['D'][0]:g} a {SHERMAN_TYPICAL_RANGES['D'][1]:g}"
+
     rows_detail = [
-        ('A (constante)', f'{A:.4f}', f"{sherman.get('se_A', 0.0):.4f}", ci_a, '10 a 20000'),
-        ('B (expoente TR)', f'{B:.4f}', f"{sherman.get('se_B', 0.0):.4f}", ci_b, '0,10 a 0,40'),
-        ('C (ajuste tempo)', f'{c_abs:.4f}', f"{sherman.get('se_C', 0.0):.4f}", ci_c, '5,0 a 60,0'),
-        ('D (expoente tempo)', f'{D:.4f}', f"{sherman.get('se_D', 0.0):.4f}", ci_d, '0,55 a 0,95'),
+        ('A (constante / constant)', f'{A:.4f}', f"{sherman.get('se_A', 0.0):.4f}", ci_a, rng_a),
+        ('B (expoente TR / exponent)', f'{B:.4f}', f"{sherman.get('se_B', 0.0):.4f}", ci_b, rng_b),
+        ('C (ajuste tempo / time adj)', f'{c_abs:.4f}', f"{sherman.get('se_C', 0.0):.4f}", ci_c, rng_c),
+        ('D (expoente tempo / exponent)', f'{D:.4f}', f"{sherman.get('se_D', 0.0):.4f}", ci_d, rng_d),
     ]
     hdrs_detail = ['Parâmetro', 'Valor', 'Erro Padrão', 'IC 95%', 'Faixa Plausível'] if is_pt else ['Parameter', 'Value', 'Std Error', '95% CI', 'Plausible Range']
 
