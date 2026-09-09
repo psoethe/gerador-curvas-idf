@@ -2287,12 +2287,29 @@ elif active_mod == 'bacia':
                         st.session_state.bacia_results = res
                         st.session_state.bacia_confirmada = False
                         st.session_state.project_dirty = True
-                        st.success(f"✅ Bacia delimitada! Área: {res['morfometria']['area_km2']:.2f} km² | Talvegue: {res['morfometria']['comprimento_talvegue_km']:.2f} km")
                         st.rerun()
                     except basin.SnapExceededError as err:
                         st.error(f"❌ {err}")
                     except Exception as ex:
                         st.error(f"Erro ao processar delineação da bacia: {ex}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+            if b_res:
+                morf = b_res.get('morfometria', {})
+                st.success(
+                    f"🎉 **Bacia Hidrográfica Delimitada com Sucesso!** "
+                    f"Área: **{morf.get('area_km2', 0):.2f} km²** | "
+                    f"Talvegue: **{morf.get('comprimento_talvegue_km', 0):.2f} km** | "
+                    f"Desnível: **{morf.get('desnivel_m', 0):.1f} m**"
+                )
+
+                # Destaque com 4 KPIs logo após a delimitação
+                mb1, mb2, mb3, mb4 = st.columns(4)
+                mb1.metric("Área da Bacia", f"{morf.get('area_km2', 0):.2f} km²")
+                mb2.metric("Talvegue Principal", f"{morf.get('comprimento_talvegue_km', 0):.2f} km")
+                mb3.metric("Desnível Total (ΔH)", f"{morf.get('desnivel_m', 0):.1f} m")
+                mb4.metric("Declividade S10-85", f"{morf.get('declividade_s10_85_m_m', 0)*100:.2f}%")
 
             # Mapa com Leaflet / Folium
             st.markdown("##### 🗺️ Inspeção Visual da Bacia e Talvegue sobre Satélite")
@@ -2302,13 +2319,13 @@ elif active_mod == 'bacia':
                 tiles=None,
                 control_scale=True,
             )
-            # Imagem de satélite como camada padrão
+            # Imagem de satélite e OSM padrão
+            folium.TileLayer('OpenStreetMap', name='🗺️ Mapa (OSM)').add_to(m_basin)
             folium.TileLayer(
                 tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
                 attr='Esri World Imagery',
                 name='🛰️ Satélite (Esri)',
             ).add_to(m_basin)
-            folium.TileLayer('OpenStreetMap', name='🗺️ Mapa (OSM)').add_to(m_basin)
             folium.TileLayer(
                 tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                 attr='Esri World Topo',
@@ -2352,6 +2369,15 @@ elif active_mod == 'bacia':
                         tooltip=f"Bacia Hidrográfica: {morf.get('area_km2', 0):.2f} km²",
                     ).add_to(m_basin)
 
+                    # Auto-enquadramento do mapa para abarcar a bacia delimitada
+                    try:
+                        from shapely.geometry import shape as shp_shape
+                        poly_wgs = shp_shape(geom['geojson_wgs84'])
+                        minx, miny, maxx, maxy = poly_wgs.bounds
+                        m_basin.fit_bounds([[float(miny), float(minx)], [float(maxy), float(maxx)]])
+                    except Exception:
+                        pass
+
                 # Talvegue Principal
                 if 'thalweg_geojson_wgs84' in geom:
                     folium.GeoJson(
@@ -2364,13 +2390,13 @@ elif active_mod == 'bacia':
                         tooltip=f"Talvegue: {morf.get('comprimento_talvegue_km', 0):.2f} km",
                     ).add_to(m_basin)
 
-            st_folium(m_basin, height=520, use_container_width=True)
+            st_folium(m_basin, height=520, use_container_width=True, key="basin_folium_map", returned_objects=[])
 
             if b_res:
                 st.divider()
                 c_nav_l, c_nav_r = st.columns([1, 1])
                 with c_nav_r:
-                    if st.button("Avançar para Morfometria & Insumos 🌾 ➔", type="primary", use_container_width=True):
+                    if st.button("Avançar para Morfometria & Insumos 🌾 ➔", type="primary", use_container_width=True, key="btn_next_morpho"):
                         st.session_state.step = 1
                         st.rerun()
 
