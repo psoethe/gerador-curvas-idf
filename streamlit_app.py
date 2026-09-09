@@ -837,8 +837,21 @@ st.divider()
 
 
 def figuras(results):
+    s_df = results['series_df']
+    col_p = t('col_precip', lang)
+    col_a = t('col_ano', lang)
+    if col_p not in s_df.columns:
+        for c in ('Precipitacao', 'precipitacao', 'Precip', 'precip', 'Chuva', 'chuva', 'Maxima_mm', 'Maxima'):
+            if c in s_df.columns:
+                s_df[col_p] = s_df[c]
+                break
+    if col_a not in s_df.columns:
+        for c in ('Ano', 'ano', 'Year', 'year'):
+            if c in s_df.columns:
+                s_df[col_a] = s_df[c]
+                break
     return (
-        fig_historical_series(results['series_df'], lang),
+        fig_historical_series(s_df, lang),
         fig_gumbel_analysis(results['gumbel_df'], results['mu'], results['sigma'],
                             results['n_samples'], lang),
         fig_pdf_curves(results['disagg_df'], lang),

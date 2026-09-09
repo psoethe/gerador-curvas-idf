@@ -19,8 +19,28 @@ def fig_historical_series(series_df, lang: str = 'PT') -> go.Figure:
     fig = go.Figure()
 
     col_ano = t('col_ano', lang)
+    if col_ano not in series_df.columns:
+        for c in (t('col_ano', 'PT'), t('col_ano', 'EN'), t('col_ano', 'ES'), 'Ano', 'ano', 'Year', 'year'):
+            if c in series_df.columns:
+                col_ano = c
+                break
+        else:
+            col_ano = series_df.columns[0]
+
     col_precip = t('col_precip', lang)
-    mean_val = series_df[col_precip].mean()
+    if col_precip not in series_df.columns:
+        for c in (t('col_precip', 'PT'), t('col_precip', 'EN'), t('col_precip', 'ES'),
+                  'Precipitacao', 'precipitacao', 'Precipitação', 'precipitação',
+                  'Precip', 'precip', 'Chuva', 'chuva', 'Maxima_mm', 'Maxima'):
+            if c in series_df.columns:
+                col_precip = c
+                break
+        else:
+            num_cols = series_df.select_dtypes(include=[np.number]).columns.tolist()
+            num_cols_wo_ano = [c for c in num_cols if c != col_ano]
+            col_precip = num_cols_wo_ano[0] if num_cols_wo_ano else (series_df.columns[1] if len(series_df.columns) > 1 else series_df.columns[0])
+
+    mean_val = float(series_df[col_precip].mean())
 
     fig.add_trace(go.Bar(
         x=series_df[col_ano],
@@ -66,7 +86,22 @@ def fig_gumbel_analysis(gumbel_df, mu: float, sigma: float, n: int, lang: str = 
         return c
 
     col_tr = t('col_tr', lang)
+    if col_tr not in gumbel_df.columns:
+        for c in (t('col_tr', 'PT'), t('col_tr', 'EN'), t('col_tr', 'ES'), 'TR', 'tr', 'Tr', 'T (anos)'):
+            if c in gumbel_df.columns:
+                col_tr = c
+                break
+        else:
+            col_tr = gumbel_df.columns[0]
+
     col_pt = t('col_pt', lang)
+    if col_pt not in gumbel_df.columns:
+        for c in (t('col_pt', 'PT'), t('col_pt', 'EN'), t('col_pt', 'ES'), 'Pt', 'pt', 'Precipitacao', 'Precipitação', 'P (mm)'):
+            if c in gumbel_df.columns:
+                col_pt = c
+                break
+        else:
+            col_pt = gumbel_df.columns[-1]
 
     fig.add_trace(go.Bar(
         x=[str(tr) for tr in gumbel_df[col_tr]],

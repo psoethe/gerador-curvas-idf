@@ -345,6 +345,13 @@ def generate_word_report(
     tab_mem = compute_taborga_memory(gumbel_mem, isozona, lang)
 
     col_ano = t('col_ano', lang)
+    if col_ano not in series_df.columns:
+        for c in ('Ano', 'ano', 'Year', 'year'):
+            if c in series_df.columns:
+                col_ano = c
+                break
+        else:
+            col_ano = series_df.columns[0]
     y0 = year_start or int(series_df[col_ano].min())
     y1 = year_end   or int(series_df[col_ano].max())
     period_str = f'{y0} - {y1}'
