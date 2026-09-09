@@ -20,14 +20,25 @@ import numpy as np
 if not hasattr(np, 'in1d'):
     np.in1d = np.isin
 
-import pyproj
-import rasterio
-from rasterio.transform import from_origin
-from rasterio.features import shapes
-from shapely.geometry import shape, Polygon, MultiPolygon, mapping, Point, LineString
-from shapely.ops import transform as shp_transform
-
-from pysheds.grid import Grid
+try:
+    import pyproj
+    import rasterio
+    from rasterio.transform import from_origin
+    from rasterio.features import shapes
+    from shapely.geometry import shape, Polygon, MultiPolygon, mapping, Point, LineString
+    from shapely.ops import transform as shp_transform
+    from pysheds.grid import Grid
+    HAS_GEO_LIBS = True
+    GEO_IMPORT_ERROR = ""
+except ImportError as _geo_err:
+    HAS_GEO_LIBS = False
+    GEO_IMPORT_ERROR = str(_geo_err)
+    pyproj = None
+    rasterio = None
+    Grid = None
+    shape = Polygon = MultiPolygon = mapping = Point = LineString = None
+    shp_transform = None
+    from_origin = shapes = None
 
 
 # Cache em memória para delineações (evita recomputar no ciclo síncrono do Streamlit)
@@ -166,6 +177,12 @@ def adquirir_mde(
     2. Leitura de cache local ou COG remoto se disponível.
     3. Fallback para MDE topográfico calibrado (com parâmetros físicos para Novo Progresso e bacias em geral).
     """
+    if not HAS_GEO_LIBS:
+        raise ImportError(
+            f"Bibliotecas geoespaciais ausentes ({GEO_IMPORT_ERROR}). "
+            f"Instale pyproj, shapely, rasterio e pysheds para utilizar o módulo Bacia."
+        )
+
     if crs_utm is None:
         crs_utm = determinar_epsg_sirgas2000(lon, lat)
 
@@ -332,6 +349,12 @@ def delinear_bacia(
     12. Ordem de Strahler e densidade de drenagem.
     13. Conferência com ANA BHO e tabulação de uso do solo MapBiomas.
     """
+    if not HAS_GEO_LIBS:
+        raise ImportError(
+            f"Bibliotecas geoespaciais ausentes ({GEO_IMPORT_ERROR}). "
+            f"Instale pyproj, shapely, rasterio e pysheds para utilizar o módulo Bacia."
+        )
+
     hash_key = calcular_hash_delineacao(lon, lat, mde_source, snap_radius_m)
     if usar_cache and hash_key in _BASIN_CACHE:
         return _BASIN_CACHE[hash_key]
