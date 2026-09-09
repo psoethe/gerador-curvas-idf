@@ -138,6 +138,37 @@ def test_project_dirty_and_amber_style():
     assert 'project_dirty' in code
 
 
+def test_idf_steps_nesting():
+    app_path = Path(__file__).resolve().parent.parent / "streamlit_app.py"
+    tree = ast.parse(app_path.read_text(encoding="utf-8"), filename=str(app_path))
+
+    idf_if_node = None
+    for node in tree.body:
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and getattr(node.test.left, 'id', None) == 'active_mod':
+            val = getattr(node.test.comparators[0], 'value', getattr(node.test.comparators[0], 's', None))
+            if val == 'idf':
+                idf_if_node = node
+                break
+
+    assert idf_if_node is not None, "Bloco 'if active_mod == idf' não encontrado no nível raiz"
+
+    # Verificar que as 4 etapas estão aninhadas dentro do bloco idf
+    steps_found = []
+    for child in idf_if_node.body:
+        if isinstance(child, ast.If):
+            curr = child
+            while curr:
+                if isinstance(curr.test, ast.Compare) and getattr(curr.test.left, 'id', None) == 'curr_s':
+                    step_val = getattr(curr.test.comparators[0], 'value', getattr(curr.test.comparators[0], 'n', None))
+                    steps_found.append(step_val)
+                if curr.orelse and isinstance(curr.orelse[0], ast.If):
+                    curr = curr.orelse[0]
+                else:
+                    curr = None
+
+    assert steps_found == [1, 2, 3, 4], f"Etapas 1, 2, 3, 4 do IDF não estão devidamente aninhadas sob 'if active_mod == idf': {steps_found}"
+
+
 def run_all():
     tests = [
         ("1. Ausência total de st.sidebar", test_sidebar_completely_removed),
@@ -147,6 +178,7 @@ def run_all():
         ("5. Destravamento estrito de Vazão (module_status('vazao'))", test_module_status_vazao_strict_unlock),
         ("6. Fonte única de coordenadas (proj_lat / proj_lon)", test_single_coordinate_source),
         ("7. Flag project_dirty e regra de cor âmbar (#d97706)", test_project_dirty_and_amber_style),
+        ("8. Aninhamento correto das Etapas 1..4 no módulo IDF", test_idf_steps_nesting),
     ]
 
     print("=" * 70)
