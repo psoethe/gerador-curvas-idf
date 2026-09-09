@@ -972,8 +972,6 @@ if active_mod == 'idf':
                 control_scale=True,
             )
             folium.TileLayer('OpenStreetMap', name='🗺️ Padrão (OSM)').add_to(m)
-            folium.TileLayer('CartoDB positron', name='⚪ Claro (Positron)').add_to(m)
-            folium.TileLayer('CartoDB dark_matter', name='⚫ Escuro (Dark)').add_to(m)
             folium.TileLayer(
                 tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
                 attr='Esri World Imagery',
@@ -1037,6 +1035,29 @@ if active_mod == 'idf':
                 fill_opacity=0.15,
                 tooltip=f"Raio de busca: {st.session_state.search_radius_km} km",
             ).add_to(m)
+
+            # Contorno da bacia se já delineada
+            b_res_idf = st.session_state.get('bacia_results')
+            if b_res_idf and 'geometria' in b_res_idf:
+                geom_idf = b_res_idf['geometria']
+                morf_idf = b_res_idf.get('morfometria', {})
+                if 'geojson_wgs84' in geom_idf:
+                    try:
+                        from shapely.geometry import shape as shp_shape
+                        poly_wgs = shp_shape(geom_idf['geojson_wgs84'])
+                        if poly_wgs.geom_type == 'Polygon':
+                            pts = [[p[1], p[0]] for p in poly_wgs.exterior.coords]
+                            folium.Polygon(
+                                locations=pts,
+                                color='#2563eb',
+                                weight=2.5,
+                                fill=True,
+                                fill_color='#3b82f6',
+                                fill_opacity=0.25,
+                                tooltip=f"Bacia Hidrográfica Delimitada: {morf_idf.get('area_km2', 0):.2f} km²",
+                            ).add_to(m)
+                    except Exception:
+                        pass
 
             for idx, est in enumerate(estacoes_no_raio):
                 is_closest = (idx == 0)
@@ -2313,9 +2334,23 @@ elif active_mod == 'bacia':
 
             # Mapa com Leaflet / Folium
             st.markdown("##### 🗺️ Inspeção Visual da Bacia e Talvegue sobre Satélite")
+
+            map_center_lat, map_center_lon = p_lat, p_lon
+            basin_bounds = None
+            if b_res and 'geojson_wgs84' in b_res.get('geometria', {}):
+                try:
+                    from shapely.geometry import shape as shp_shape
+                    poly_wgs = shp_shape(b_res['geometria']['geojson_wgs84'])
+                    minx, miny, maxx, maxy = poly_wgs.bounds
+                    map_center_lat = (miny + maxy) / 2.0
+                    map_center_lon = (minx + maxx) / 2.0
+                    basin_bounds = [[float(miny), float(minx)], [float(maxy), float(maxx)]]
+                except Exception:
+                    pass
+
             m_basin = folium.Map(
-                location=[p_lat, p_lon],
-                zoom_start=13,
+                location=[map_center_lat, map_center_lon],
+                zoom_start=12 if basin_bounds else 13,
                 tiles=None,
                 control_scale=True,
             )
@@ -2355,42 +2390,70 @@ elif active_mod == 'bacia':
                     icon=folium.Icon(color='blue', icon='flag'),
                 ).add_to(m_basin)
 
-                # Polígono da Bacia
+                # Polígono da Bacia (usando folium.Polygon nativo para renderização vetorial garantida)
                 if 'geojson_wgs84' in geom:
-                    folium.GeoJson(
-                        geom['geojson_wgs84'],
-                        name="Divisor da Bacia",
-                        style_function=lambda x: {
-                            'color': '#2563eb',
-                            'weight': 3,
-                            'fillColor': '#3b82f6',
-                            'fillOpacity': 0.35,
-                        },
-                        tooltip=f"Bacia Hidrográfica: {morf.get('area_km2', 0):.2f} km²",
-                    ).add_to(m_basin)
-
-                    # Auto-enquadramento do mapa para abarcar a bacia delimitada
                     try:
                         from shapely.geometry import shape as shp_shape
                         poly_wgs = shp_shape(geom['geojson_wgs84'])
-                        minx, miny, maxx, maxy = poly_wgs.bounds
-                        m_basin.fit_bounds([[float(miny), float(minx)], [float(maxy), float(maxx)]])
+                        if poly_wgs.geom_type == 'Polygon':
+                            ext_pts = [[p[1], p[0]] for p in poly_wgs.exterior.coords]
+                            folium.Polygon(
+                                locations=ext_pts,
+                                color='#2563eb',
+                                weight=3,
+                                fill=True,
+                                fill_color='#3b82f6',
+                                fill_opacity=0.35,
+                                tooltip=f"Bacia Hidrográfica: {morf.get('area_km2', 0):.2f} km²",
+                                popup=f"<b>Bacia Hidrográfica</b><br>Área: {morf.get('area_km2', 0):.2f} km²<br>Talvegue: {morf.get('comprimento_talvegue_km', 0):.2f} km",
+                            ).add_to(m_basin)
+                        elif poly_wgs.geom_type == 'MultiPolygon':
+                            for part in poly_wgs.geoms:
+                                ext_pts = [[p[1], p[0]] for p in part.exterior.coords]
+                                folium.Polygon(
+                                    locations=ext_pts,
+                                    color='#2563eb',
+                                    weight=3,
+                                    fill=True,
+                                    fill_color='#3b82f6',
+                                    fill_opacity=0.35,
+                                    tooltip=f"Bacia Hidrográfica: {morf.get('area_km2', 0):.2f} km²",
+                                ).add_to(m_basin)
                     except Exception:
                         pass
 
-                # Talvegue Principal
+                # Talvegue Principal (usando folium.PolyLine nativo)
                 if 'thalweg_geojson_wgs84' in geom:
-                    folium.GeoJson(
-                        geom['thalweg_geojson_wgs84'],
-                        name="Talvegue Principal",
-                        style_function=lambda x: {
-                            'color': '#d97706',
-                            'weight': 4,
-                        },
-                        tooltip=f"Talvegue: {morf.get('comprimento_talvegue_km', 0):.2f} km",
-                    ).add_to(m_basin)
+                    try:
+                        from shapely.geometry import shape as shp_shape
+                        thal_wgs = shp_shape(geom['thalweg_geojson_wgs84'])
+                        if thal_wgs.geom_type == 'LineString':
+                            t_pts = [[p[1], p[0]] for p in thal_wgs.coords]
+                            folium.PolyLine(
+                                locations=t_pts,
+                                color='#d97706',
+                                weight=4,
+                                tooltip=f"Talvegue Principal: {morf.get('comprimento_talvegue_km', 0):.2f} km",
+                                popup=f"<b>Talvegue Principal</b><br>Extensão: {morf.get('comprimento_talvegue_km', 0):.2f} km<br>Desnível: {morf.get('desnivel_m', 0):.1f} m",
+                            ).add_to(m_basin)
+                        elif thal_wgs.geom_type == 'MultiLineString':
+                            for line in thal_wgs.geoms:
+                                t_pts = [[p[1], p[0]] for p in line.coords]
+                                folium.PolyLine(
+                                    locations=t_pts,
+                                    color='#d97706',
+                                    weight=4,
+                                    tooltip=f"Talvegue: {morf.get('comprimento_talvegue_km', 0):.2f} km",
+                                ).add_to(m_basin)
+                    except Exception:
+                        pass
 
-            st_folium(m_basin, height=520, use_container_width=True, key="basin_folium_map", returned_objects=[])
+                if basin_bounds:
+                    m_basin.fit_bounds(basin_bounds)
+
+            # Chave dinâmica para forçar remontagem limpa do iframe no Leaflet quando a bacia for calculada
+            map_key = f"basin_folium_map_{'calc_' + str(b_res.get('hash', ''))[:8] if b_res else 'init'}"
+            st_folium(m_basin, height=520, use_container_width=True, key=map_key, returned_objects=[])
 
             if b_res:
                 st.divider()
