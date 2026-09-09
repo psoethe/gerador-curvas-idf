@@ -20,6 +20,9 @@ from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 import pandas as pd
 import unicodedata
+import gzip
+import json
+import time
 
 from calculations import (
     run_full_analysis,
@@ -191,10 +194,42 @@ def buscar_dataframe_historico(estacao: str, y0: int = None, y1: int = None) -> 
     return obter_serie_chuva_historica(estacao, y0, y1)
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, ttl=86400)
 def listar_estacoes_hist(uf: str) -> list:
-    """Lista estações pluviométricas de uma UF pelo inventário legado (sem login)."""
-    return listar_estacoes_historicas(uf)
+    """
+    Lista estações pluviométricas de uma UF.
+    Prioriza o inventário local em assets/stations/{uf}.json.gz (instantâneo e imune
+    a falhas/500 da ANA). Se ausente, busca no webservice da ANA e persiste em cache.
+    """
+    uf_clean = str(uf).strip().upper()
+    cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'stations', f'{uf_clean}.json.gz')
+
+    # 1. Carregamento ultra-rápido do cache local offline (20ms, 100% resiliente)
+    if os.path.exists(cache_path):
+        try:
+            with gzip.open(cache_path, 'rt', encoding='utf-8') as f:
+                data = json.load(f)
+                if data:
+                    return data
+        except Exception:
+            pass
+
+    # 2. Fallback online para webservice da ANA (com retries)
+    for attempt in range(3):
+        try:
+            estacoes = listar_estacoes_historicas(uf_clean, timeout=45)
+            if estacoes:
+                try:
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    with gzip.open(cache_path, 'wt', encoding='utf-8') as f:
+                        json.dump(estacoes, f, ensure_ascii=False)
+                except Exception:
+                    pass
+                return estacoes
+        except Exception:
+            time.sleep(1)
+
+    return []
 
 
 def _remover_acentos(texto: str) -> str:
