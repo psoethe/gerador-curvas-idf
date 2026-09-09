@@ -187,3 +187,113 @@ def fig_idf_curves(idf_df, sherman_params: dict, lang: str = 'PT') -> go.Figure:
         ),
     )
     return fig
+
+
+def fig_hydrograph_scs(df_hidro: pd.DataFrame, q_pico: float, t_pico_h: float, lang: str = 'PT') -> go.Figure:
+    """
+    Gera o gráfico do Hidrograma de Cheia Q(t) resultante da convolução do HU SCS.
+    Destaque visual do pico de vazão e preenchimento sob a curva.
+    """
+    fig = go.Figure()
+
+    nome_vazao = 'Vazão Q(t)' if lang == 'PT' else 'Discharge Q(t)'
+    rotulo_pico = (
+        f'<b>Pico de Cheia</b><br>Qp = {q_pico:.2f} m³/s<br>tp = {t_pico_h:.2f} h'
+        if lang == 'PT' else
+        f'<b>Peak Flow</b><br>Qp = {q_pico:.2f} m³/s<br>tp = {t_pico_h:.2f} h'
+    )
+
+    fig.add_trace(go.Scatter(
+        x=df_hidro['Tempo_h'],
+        y=df_hidro['Vazao_m3s'],
+        mode='lines',
+        name=nome_vazao,
+        line=dict(color='#2563eb', width=2.5),
+        fill='tozeroy',
+        fillcolor='rgba(37, 99, 235, 0.12)',
+        hovertemplate='<b>t</b> = %{x:.2f} h<br><b>Q</b> = %{y:.2f} m³/s<extra></extra>',
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=[t_pico_h],
+        y=[q_pico],
+        mode='markers+text',
+        name='Pico' if lang == 'PT' else 'Peak',
+        marker=dict(color='#dc2626', size=11, symbol='diamond'),
+        text=[rotulo_pico],
+        textposition='top right',
+        showlegend=False,
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text='<b>Hidrograma de Cheia — Modelo HU SCS (NRCS)</b>' if lang == 'PT' else '<b>Flood Hydrograph — SCS Unit Hydrograph</b>',
+            font=dict(size=14, color='#0f172a'),
+        ),
+        xaxis=dict(
+            title=dict(text='Tempo decorrido (horas)' if lang == 'PT' else 'Elapsed Time (hours)'),
+            showgrid=True,
+            gridcolor='#f1f5f9',
+        ),
+        yaxis=dict(
+            title=dict(text='Vazão (m³/s)' if lang == 'PT' else 'Discharge (m³/s)'),
+            showgrid=True,
+            gridcolor='#f1f5f9',
+        ),
+        template='plotly_white',
+        hovermode='x',
+        margin=dict(l=50, r=30, t=50, b=40),
+    )
+    return fig
+
+
+def fig_hyetograph_blocks(df_hidro: pd.DataFrame, lang: str = 'PT') -> go.Figure:
+    """
+    Gera o gráfico do Hietograma de Blocos Alternados:
+    Precipitação Total por intervalo vs Precipitação Efetiva Pe (escoamento superficial).
+    """
+    fig = go.Figure()
+
+    nome_total = 'Chuva Total (mm)' if lang == 'PT' else 'Total Rain (mm)'
+    nome_efetiva = 'Chuva Efetiva Pe (mm)' if lang == 'PT' else 'Effective Rain Pe (mm)'
+
+    fig.add_trace(go.Bar(
+        x=df_hidro['Tempo_h'],
+        y=df_hidro['Chuva_Total_mm'],
+        name=nome_total,
+        marker_color='#93c5fd',
+        opacity=0.75,
+        hovertemplate='<b>t</b> = %{x:.2f} h<br><b>P</b> = %{y:.2f} mm<extra></extra>',
+    ))
+
+    fig.add_trace(go.Bar(
+        x=df_hidro['Tempo_h'],
+        y=df_hidro['Chuva_Efetiva_mm'],
+        name=nome_efetiva,
+        marker_color='#1d4ed8',
+        opacity=0.9,
+        hovertemplate='<b>t</b> = %{x:.2f} h<br><b>Pe</b> = %{y:.2f} mm<extra></extra>',
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text='<b>Hietograma de Projeto — Blocos Alternados</b>' if lang == 'PT' else '<b>Design Hyetograph — Alternating Blocks</b>',
+            font=dict(size=14, color='#0f172a'),
+        ),
+        xaxis=dict(
+            title=dict(text='Tempo decorrido (horas)' if lang == 'PT' else 'Elapsed Time (hours)'),
+            showgrid=True,
+            gridcolor='#f1f5f9',
+        ),
+        yaxis=dict(
+            title=dict(text='Precipitação (mm)' if lang == 'PT' else 'Precipitation (mm)'),
+            showgrid=True,
+            gridcolor='#f1f5f9',
+        ),
+        barmode='overlay',
+        template='plotly_white',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        margin=dict(l=50, r=30, t=50, b=40),
+    )
+    return fig
+

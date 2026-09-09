@@ -316,6 +316,9 @@ def generate_word_report(
     idw_meta: dict | None = None,
     station_info: dict | None = None,
     search_radius_km: float = 35.0,
+    app_name: str = 'SII-HiDRO-IDF',
+    bacia_results: dict | None = None,
+    vazao_results: dict | None = None,
 ) -> bytes:
     """
     Generate a complete Word (.docx) Memorial de Calculo / Calculation Report.
@@ -375,7 +378,7 @@ def generate_word_report(
     doc.add_paragraph()
     tp = doc.add_paragraph()
     tp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    tr = tp.add_run('IDF Curve Calculator')
+    tr = tp.add_run(f'⚡ {app_name}')
     tr.bold = True
     tr.font.size = Pt(24)
     tr.font.color.rgb = _BLUE_DARK
@@ -401,7 +404,7 @@ def generate_word_report(
         (t('report_period', lang),       period_str),
         (t('report_isozona', lang),      iso_txt),
         (t('report_n', lang),            f'N = {n} {t("report_n_suffix", lang)}'),
-        ('Versão do Sistema / System Ver.', 'Soethe·ii / SII·IDF v2.1'),
+        ('Versão do Sistema / System Ver.', 'SII-HiDRO v3.0'),
         (t('report_date', lang),         now.strftime('%d/%m/%Y %H:%M:%S')),
         ('ID', report_id),
     ])
@@ -638,12 +641,104 @@ def generate_word_report(
     doc.add_paragraph()
     _sherman_block(doc, sherman, lang)
 
+    # ── MÓDULO BACIA HIDROGRÁFICA (SII-HiDRO-Bacia) ──────────────────────────
+    if bacia_results and isinstance(bacia_results, dict):
+        p_bac = bacia_results.get('parametros', {}) or {}
+        u_bac = bacia_results.get('uso_solo', {}) or {}
+        c_bac = bacia_results.get('conferencia', {}) or {}
+
+        doc.add_page_break()
+        _section_header(doc, ('Módulo Bacia - Morfometria e Insumos Hidrológicos'
+                              if is_pt else 'Basin Module - Morphometry & Hydrological Inputs'))
+        _para(doc, ('Caracterizacao morfometrica obtida por delineacao digital baseada em FABDEM (30m) e D8 em SIRGAS 2000 UTM.'
+                    if is_pt else 'Morphometric characterization obtained via digital delineation using FABDEM (30m) and D8.'))
+        doc.add_paragraph()
+
+        bacia_rows = [
+            ('Área de Drenagem / Drainage Area', f"{p_bac.get('area_km2', 0.0):.3f} km² ({p_bac.get('area_km2', 0.0)*100:.1f} ha)"),
+            ('Perímetro / Perimeter', f"{p_bac.get('perimetro_km', 0.0):.2f} km"),
+            ('Comprimento do Talvegue / Main Stream Length', f"{p_bac.get('talvegue_km', p_bac.get('comprimento_talvegue_km', 0.0)):.3f} km"),
+            ('Comprimento Axial / Axial Length', f"{p_bac.get('comprimento_axial_km', 0.0):.3f} km"),
+            ('Desnível do Talvegue / Elevation Difference (ΔH)', f"{p_bac.get('desnivel_m', 0.0):.1f} m"),
+            ('Cota do Exutório / Outlet Elevation', f"{p_bac.get('cota_exutorio_m', 0.0):.1f} m"),
+            ('Cota do Ponto Remoto / Remote Point Elevation', f"{p_bac.get('cota_remota_m', 0.0):.1f} m"),
+            ('Declividade Média do Talvegue / Stream Slope (S)', f"{p_bac.get('declividade_talvegue_m_m', 0.0)*100:.2f}%"),
+            ('Declividade S10-85 / S10-85 Slope', f"{p_bac.get('declividade_s10_85_pct', 0.0):.2f}%"),
+            ('Declividade Equivalente / Equivalent Slope', f"{p_bac.get('declividade_equivalente_pct', 0.0):.2f}%"),
+            ('Declividade Média da Bacia / Mean Basin Slope', f"{p_bac.get('declividade_bacia_pct', p_bac.get('declividade_media_pct', 0.0)):.1f}%"),
+            ('Coeficiente de Compacidade / Compactness (Kc)', f"{p_bac.get('coeficiente_compacidade_kc', 0.0):.3f}"),
+            ('Fator de Forma / Shape Factor (Kf)', f"{p_bac.get('fator_forma_kf', 0.0):.3f}"),
+            ('Densidade de Drenagem / Drainage Density', f"{p_bac.get('densidade_drenagem_km_km2', 0.0):.2f} km/km²"),
+            ('Ordem de Strahler / Strahler Stream Order', str(p_bac.get('ordem_strahler', '—'))),
+            ('Uso do Solo Predominante / Land Use', str(u_bac.get('fonte', 'MapBiomas'))),
+            ('Grupo Hidrológico / Soil Group', str(u_bac.get('grupo_hidrologico_soilgrids', '—'))),
+            ('Curve Number Ponderado (CN)', f"{u_bac.get('cn_ponderado', 0.0):.1f}"),
+            ('Coeficiente C Ponderado (Runoff)', f"{u_bac.get('c_ponderado', 0.0):.3f}"),
+        ]
+        if u_bac.get('sobrescrita'):
+            sobr = u_bac['sobrescrita']
+            bacia_rows.append(('Sobrescrita Manual Adotada', f"C={sobr.get('c')}, CN={sobr.get('cn')} (Motivo: {sobr.get('motivo')})"))
+        if c_bac:
+            bacia_rows.append(('Conferência ANA BHO', f"Área ANA: {c_bac.get('area_km2', 0.0):.2f} km² (Divergência: {c_bac.get('divergencia_pct', 0.0):.1f}%)"))
+        bacia_rows.append(('Validação Visual do Divisor', 'Confirmado pelo Responsável Técnico' if bacia_results.get('confirmada_por_usuario') else 'Pendente'))
+
+        df_bacia_doc = pd.DataFrame(bacia_rows, columns=['Parâmetro / Parameter', 'Valor / Value'])
+        _add_df_table(doc, df_bacia_doc)
+
+    # ── MÓDULO VAZÃO DE PROJETO (SII-HiDRO-Vazão) ─────────────────────────────
+    if vazao_results and isinstance(vazao_results, dict):
+        doc.add_page_break()
+        _section_header(doc, ('Módulo Vazão - Tempo de Concentração e Vazão de Projeto'
+                              if is_pt else 'Discharge Module - Time of Concentration & Design Flow'))
+        _para(doc, ('Determinação da vazão de cheia de projeto conforme o critério normativo de área do DNIT IPR-724.'
+                    if is_pt else 'Determination of peak design flow according to DNIT IPR-724 normative area criteria.'))
+        doc.add_paragraph()
+
+        # Tabela comparativa de tc
+        tc_info = vazao_results.get('tc_data', {})
+        if tc_info and 'formulas' in tc_info:
+            _para(doc, '1. Estimativa Multi-Fórmula do Tempo de Concentração (tc)', bold=True)
+            tc_doc_rows = []
+            for f in tc_info['formulas']:
+                tc_doc_rows.append({
+                    'Fórmula': f['nome'],
+                    'tc (min)': f"{f['tc_min']:.1f}",
+                    'tc (h)': f"{f['tc_h']:.2f}",
+                    'Domínio de Calibração': f['dominio'],
+                    'Validade': 'No domínio' if f['no_dominio'] else 'Fora do domínio',
+                })
+            df_tc_doc = pd.DataFrame(tc_doc_rows)
+            _add_df_table(doc, df_tc_doc)
+            doc.add_paragraph()
+
+        _para(doc, '2. Decisão Normativa e Resultados Hidrológicos', bold=True)
+        vazao_rows = [
+            ('tc Adotado / Adopted tc', f"{vazao_results.get('tc_adotado_min', 0.0):.1f} min ({vazao_results.get('formula_tc_adotada', '—')})"),
+            ('Período de Retorno / Design TR', f"{vazao_results.get('tr_anos', 25):.0f} anos / years"),
+            ('Intensidade de Chuva IDF (i)', f"{vazao_results.get('intensidade_chuva_mm_h', 0.0):.2f} mm/h"),
+            ('Método Hidrológico Adotado', str(vazao_results.get('nome_metodo_adotado', '—'))),
+            ('Limiar Normativo DNIT IPR-724', f"{vazao_results.get('limiar_ipr724_km2', 1.0):.2f} km² (100 ha)"),
+            ('Status do Método Racional', 'BLOQUEADO (Área > 100 ha, DNIT IPR-724)' if vazao_results.get('bloqueio_racional') else 'Elegível'),
+            ('Vazão de Projeto Q', f"{vazao_results.get('q_projeto_m3s', 0.0):.2f} m³/s"),
+        ]
+        if vazao_results.get('metodo_adotado') == 'scs' and 'scs' in vazao_results:
+            scs_d = vazao_results['scs']
+            vazao_rows.extend([
+                ('Tempo ao Pico (tp)', f"{scs_d.get('tempo_pico_h', 0.0):.2f} h ({scs_d.get('tempo_pico_min', 0.0):.0f} min)"),
+                ('Volume Total Escoado', f"{scs_d.get('volume_total_m3', 0.0):,.0f} m³"),
+                ('Chuva Total', f"{scs_d.get('lamina_total_mm', 0.0):.1f} mm"),
+                ('Chuva Efetiva Pe', f"{scs_d.get('lamina_efetiva_mm', 0.0):.1f} mm"),
+                ('Fator de Abatimento Espacial (ARF)', f"{scs_d.get('coef_abatimento_espacial', 1.0):.3f}"),
+            ])
+        df_vazao_doc = pd.DataFrame(vazao_rows, columns=['Parâmetro / Parameter', 'Valor / Value'])
+        _add_df_table(doc, df_vazao_doc)
+
     # ── FOOTER ────────────────────────────────────────────────────────────────
     doc.add_page_break()
     _para(doc,
-          (f'Relatorio gerado automaticamente pelo IDF Curve Calculator em {now.strftime("%d/%m/%Y %H:%M")}.'
+          (f'Relatorio gerado automaticamente pelo {app_name} em {now.strftime("%d/%m/%Y %H:%M")}.'
            if is_pt else
-           f'Report automatically generated by IDF Curve Calculator on {now.strftime("%d/%m/%Y %H:%M")}.'),
+           f'Report automatically generated by {app_name} on {now.strftime("%d/%m/%Y %H:%M")}.'),
           italic=True, size=9, color=_GREY_DARK, align=WD_ALIGN_PARAGRAPH.CENTER)
     _para(doc, f'ID: {report_id}', size=9, color=_GREY_DARK, align=WD_ALIGN_PARAGRAPH.CENTER)
 

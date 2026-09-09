@@ -332,6 +332,9 @@ def generate_pdf_report(
     idw_meta: dict | None = None,
     station_info: dict | None = None,
     search_radius_km: float = 35.0,
+    app_name: str = 'SII-HiDRO-IDF',
+    bacia_results: dict | None = None,
+    vazao_results: dict | None = None,
 ) -> bytes:
     """
     Generate a complete PDF Memorial de Cálculo / Calculation Report.
@@ -366,7 +369,7 @@ def generate_pdf_report(
     is_pt = lang == 'PT'
     now   = datetime.datetime.now()
     report_id = f'IDF-{estacao or "XXX"}-{now.strftime("%Y%m%d-%H%M")}'
-    app_name  = 'IDF Curve Calculator'
+    app_name  = app_name or 'SII-HiDRO-IDF'
 
     # ── Render figures to PNG ─────────────────────────────────────────────────
     logger.info("🖼️ Renderizando figuras para PNG...")
@@ -405,7 +408,7 @@ def generate_pdf_report(
     # COVER PAGE
     # ══════════════════════════════════════════════════════════════════════════
     story.append(Spacer(1, 2.5 * cm))
-    cover_data = [[Paragraph(f'IDF Curve Calculator', st['Title'])]]
+    cover_data = [[Paragraph(f'⚡ {app_name}', st['Title'])]]
     cover_tbl = Table(cover_data, colWidths=[CONTENT_W])
     cover_tbl.setStyle(TableStyle([
         ('BACKGROUND',    (0, 0), (-1, -1), BLUE_DARK),
@@ -438,7 +441,7 @@ def generate_pdf_report(
         (t('report_n', lang),             f'{n}{t("report_n_suffix", lang)}'),
         (t('report_mu', lang),            f'{mu:.3f} mm'),
         (t('report_sigma', lang),         f'{sigma:.3f} mm'),
-        ('Versão do Sistema / System Ver.', 'Soethe·ii / SII·IDF v2.1'),
+        ('Versão do Sistema / System Ver.', 'SII-HiDRO v3.0'),
         ('ID Relatório / Report ID',      report_id),
         ('Data e Hora / Date & Time',     now.strftime('%d/%m/%Y %H:%M:%S')),
     ])
@@ -1755,6 +1758,132 @@ def generate_pdf_report(
     compare_df = pd.DataFrame(compare_rows)
     story.append(_df_to_rl_table(compare_df, header_bg=colors.HexColor('#0c4a6e'), font_size=7.5))
     story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # MÓDULO BACIA HIDROGRÁFICA (SII-HiDRO-Bacia)
+    # ══════════════════════════════════════════════════════════════════════════
+    if bacia_results and isinstance(bacia_results, dict):
+        p_bac = bacia_results.get('parametros', {}) or {}
+        u_bac = bacia_results.get('uso_solo', {}) or {}
+        c_bac = bacia_results.get('conferencia', {}) or {}
+
+        story.append(SectionHeader(
+            'Módulo Bacia — Morfometria e Insumos Hidrológicos' if is_pt else 'Basin Module — Morphometry & Hydrological Inputs',
+            bg_color=TEAL, height=28, font_size=12
+        ))
+        story.append(Spacer(1, 0.3 * cm))
+        story.append(Paragraph(
+            'Caracterização morfométrica da bacia hidrográfica obtida por delineação hidrológica digital baseada no MDE FABDEM (30m) e algoritmo D8 com reprojeção em SIRGAS 2000 UTM.'
+            if is_pt else
+            'Morphometric characterization of the drainage basin obtained by digital hydrological delineation using FABDEM DEM (30m) and D8 flow routing reprojected to SIRGAS 2000 UTM.',
+            st['Body']
+        ))
+        story.append(Spacer(1, 0.3 * cm))
+
+        bacia_kv = [
+            ('Área de Drenagem / Drainage Area', f"{p_bac.get('area_km2', 0.0):.3f} km² ({p_bac.get('area_km2', 0.0)*100:.1f} ha)"),
+            ('Perímetro / Perimeter', f"{p_bac.get('perimetro_km', 0.0):.2f} km"),
+            ('Comprimento do Talvegue / Main Stream Length', f"{p_bac.get('talvegue_km', p_bac.get('comprimento_talvegue_km', 0.0)):.3f} km"),
+            ('Comprimento Axial / Axial Length', f"{p_bac.get('comprimento_axial_km', 0.0):.3f} km"),
+            ('Desnível do Talvegue / Elevation Difference (ΔH)', f"{p_bac.get('desnivel_m', 0.0):.1f} m"),
+            ('Cota do Exutório / Outlet Elevation', f"{p_bac.get('cota_exutorio_m', 0.0):.1f} m"),
+            ('Cota do Ponto Mais Remoto / Remote Point Elevation', f"{p_bac.get('cota_remota_m', 0.0):.1f} m"),
+            ('Declividade Média do Talvegue / Stream Slope (S)', f"{p_bac.get('declividade_talvegue_m_m', 0.0)*100:.2f}% ({p_bac.get('declividade_talvegue_m_m', 0.0):.4f} m/m)"),
+            ('Declividade S10-85 / S10-85 Slope', f"{p_bac.get('declividade_s10_85_pct', 0.0):.2f}%"),
+            ('Declividade Equivalente / Equivalent Slope', f"{p_bac.get('declividade_equivalente_pct', 0.0):.2f}%"),
+            ('Declividade Média da Bacia / Mean Basin Slope', f"{p_bac.get('declividade_bacia_pct', p_bac.get('declividade_media_pct', 0.0)):.1f}%"),
+            ('Coeficiente de Compacidade / Compactness (Kc)', f"{p_bac.get('coeficiente_compacidade_kc', 0.0):.3f}"),
+            ('Fator de Forma / Shape Factor (Kf)', f"{p_bac.get('fator_forma_kf', 0.0):.3f}"),
+            ('Densidade de Drenagem / Drainage Density', f"{p_bac.get('densidade_drenagem_km_km2', 0.0):.2f} km/km²"),
+            ('Ordem de Strahler / Strahler Stream Order', str(p_bac.get('ordem_strahler', '—'))),
+            ('Uso do Solo Predominante / Land Use (MapBiomas)', str(u_bac.get('fonte', 'MapBiomas'))),
+            ('Grupo Hidrológico / Hydrologic Soil Group (SoilGrids)', str(u_bac.get('grupo_hidrologico_soilgrids', '—'))),
+            ('Curve Number Ponderado (CN)', f"{u_bac.get('cn_ponderado', 0.0):.1f}"),
+            ('Coeficiente C Ponderado (Runoff)', f"{u_bac.get('c_ponderado', 0.0):.3f}"),
+        ]
+        if u_bac.get('sobrescrita'):
+            sobr = u_bac['sobrescrita']
+            bacia_kv.append(('Sobrescrita Manual Adotada', f"C={sobr.get('c')}, CN={sobr.get('cn')} (Motivo: {sobr.get('motivo')})"))
+        if c_bac:
+            bacia_kv.append(('Conferência Cruzada ANA BHO', f"Área ANA: {c_bac.get('area_km2', 0.0):.2f} km² (Divergência: {c_bac.get('divergencia_pct', 0.0):.1f}%)"))
+        bacia_kv.append(('Validação Visual do Divisor', 'Confirmado pelo Responsável Técnico' if bacia_results.get('confirmada_por_usuario') else 'Pendente'))
+
+        story.append(_kv_table(bacia_kv, st))
+        story.append(Spacer(1, 0.4 * cm))
+        story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # MÓDULO VAZÃO DE PROJETO (SII-HiDRO-Vazão)
+    # ══════════════════════════════════════════════════════════════════════════
+    if vazao_results and isinstance(vazao_results, dict):
+        story.append(SectionHeader(
+            'Módulo Vazão — Tempo de Concentração e Vazão de Projeto' if is_pt else 'Discharge Module — Time of Concentration & Design Flow',
+            bg_color=BLUE_MID, height=28, font_size=12
+        ))
+        story.append(Spacer(1, 0.3 * cm))
+
+        # Tabela comparativa de tc
+        tc_info = vazao_results.get('tc_data', {})
+        if tc_info and 'formulas' in tc_info:
+            story.append(Paragraph(
+                '<b>1. Estimativa Multi-Fórmula do Tempo de Concentração (tc)</b>' if is_pt else '<b>1. Multi-Formula Time of Concentration (tc)</b>',
+                st['H2']
+            ))
+            story.append(Spacer(1, 0.2 * cm))
+            tc_hdr = ['Fórmula', 'tc (min)', 'tc (h)', 'Domínio Físico de Aplicação', 'Validade']
+            tc_data_matrix = [tc_hdr]
+            for f in tc_info['formulas']:
+                status_str = 'No domínio' if f['no_dominio'] else 'Fora do domínio'
+                tc_data_matrix.append([
+                    f['nome'],
+                    f"{f['tc_min']:.1f}",
+                    f"{f['tc_h']:.2f}",
+                    f['dominio'],
+                    status_str,
+                ])
+            t_tc = Table(tc_data_matrix, colWidths=[3.2*cm, 1.8*cm, 1.6*cm, 7.5*cm, 2.7*cm])
+            t_tc.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), BLUE_DARK),
+                ('TEXTCOLOR',  (0, 0), (-1, 0), WHITE),
+                ('FONTNAME',   (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE',   (0, 0), (-1, -1), 8),
+                ('GRID',       (0, 0), (-1, -1), 0.4, colors.HexColor('#cbd5e1')),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [WHITE, GREY_LIGHT]),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ]))
+            story.append(t_tc)
+            story.append(Spacer(1, 0.3 * cm))
+
+        # Dados da adoção e decisão normativa
+        story.append(Paragraph(
+            '<b>2. Decisão Normativa e Determinação da Vazão de Projeto</b>' if is_pt else '<b>2. Normative Decision & Peak Discharge Determination</b>',
+            st['H2']
+        ))
+        story.append(Spacer(1, 0.2 * cm))
+
+        vazao_kv = [
+            ('Tempo de Concentração Adotado / Adopted tc', f"{vazao_results.get('tc_adotado_min', 0.0):.1f} min ({vazao_results.get('formula_tc_adotada', '—')})"),
+            ('Período de Retorno de Projeto / Design TR', f"{vazao_results.get('tr_anos', 25):.0f} anos / years"),
+            ('Intensidade de Chuva IDF / IDF Rainfall Intensity (i)', f"{vazao_results.get('intensidade_chuva_mm_h', 0.0):.2f} mm/h"),
+            ('Método Hidrológico Adotado / Hydrological Method', str(vazao_results.get('nome_metodo_adotado', '—'))),
+            ('Limiar Normativo DNIT IPR-724 / Normative Threshold', f"{vazao_results.get('limiar_ipr724_km2', 1.0):.2f} km² (100 ha)"),
+            ('Status do Método Racional', 'BLOQUEADO (Área excede 100 ha conforme DNIT IPR-724 item 3.2.1)' if vazao_results.get('bloqueio_racional') else 'Elegível'),
+            ('Vazão de Projeto / Design Peak Discharge (Q)', f"{vazao_results.get('q_projeto_m3s', 0.0):.2f} m³/s"),
+        ]
+        if vazao_results.get('metodo_adotado') == 'scs' and 'scs' in vazao_results:
+            scs_d = vazao_results['scs']
+            vazao_kv.extend([
+                ('Tempo de Pico da Cheia / Time to Peak (tp)', f"{scs_d.get('tempo_pico_h', 0.0):.2f} h ({scs_d.get('tempo_pico_min', 0.0):.0f} min)"),
+                ('Volume Total Escoado / Total Runoff Volume', f"{scs_d.get('volume_total_m3', 0.0):,.0f} m³"),
+                ('Precipitação Total / Total Rainfall', f"{scs_d.get('lamina_total_mm', 0.0):.1f} mm"),
+                ('Precipitação Efetiva / Effective Rainfall (Pe)', f"{scs_d.get('lamina_efetiva_mm', 0.0):.1f} mm"),
+                ('Fator de Abatimento Espacial / ARF', f"{scs_d.get('coef_abatimento_espacial', 1.0):.3f}"),
+            ])
+
+        story.append(_kv_table(vazao_kv, st))
+        story.append(Spacer(1, 0.4 * cm))
+        story.append(PageBreak())
 
     # ══════════════════════════════════════════════════════════════════════════
     # ANNEX — Guia de Uso / User Guide

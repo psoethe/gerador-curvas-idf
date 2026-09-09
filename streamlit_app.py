@@ -49,19 +49,64 @@ from plotting import (
     fig_gumbel_analysis,
     fig_pdf_curves,
     fig_idf_curves,
+    fig_hydrograph_scs,
+    fig_hyetograph_blocks,
 )
 from report import generate_pdf_report
 from report_word import generate_word_report
 from i18n import t
+import project
+import basin
+import discharge
+
+
 
 # ── Configuração da página ────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Gerador de Curvas IDF",
-    page_icon="🌧️",
+    page_title="SII-HiDRO — Sistema Integrado de Hidrologia",
+    page_icon="💧",
     layout="wide",
 )
 
 ISOZONAS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+
+
+# ── Marca Dinâmica SII-HiDRO ──────────────────────────────────────────────────
+def render_brand_html(active_module: str = 'idf', font_size: str = '2.0rem') -> str:
+    """
+    Renderiza a marca dinâmica SII-HiDRO com o 'i' em minúsculo estilizado
+    na cor de ação primária (#2563eb).
+    Módulo Projeto → SII-HiDRO
+    Módulo IDF     → SII-HiDRO-IDF
+    Módulo Bacia   → SII-HiDRO-Bacia
+    Módulo Vazão   → SII-HiDRO-Vazão
+    """
+    suffix_map = {
+        'projeto': '',
+        'idf': '-IDF',
+        'bacia': '-Bacia',
+        'vazao': '-Vazão',
+    }
+    suffix = suffix_map.get(str(active_module).lower(), f"-{str(active_module).capitalize()}")
+    return (
+        f"<div style='display:inline-flex; align-items:center; gap:8px; line-height:1.2; margin-bottom:4px;'>"
+        f"<span style='font-size:{font_size}; font-weight:800; letter-spacing:-0.5px; color:#0f172a;'>"
+        f"SII-H<span style='color:#2563eb;'>i</span>DRO{suffix}"
+        f"</span>"
+        f"</div>"
+    )
+
+
+def brand_text(active_module: str = 'idf') -> str:
+    """Retorna o texto sem formatação HTML da marca dinâmica."""
+    suffix_map = {
+        'projeto': '',
+        'idf': '-IDF',
+        'bacia': '-Bacia',
+        'vazao': '-Vazão',
+    }
+    suffix = suffix_map.get(str(active_module).lower(), f"-{str(active_module).capitalize()}")
+    return f"SII-HiDRO{suffix}"
 
 
 # ── Credenciais da ANA (st.secrets → variáveis de ambiente → ana.env) ─────────
@@ -297,9 +342,9 @@ def detectar_uf_coordenadas(lat: float, lon: float) -> tuple[str, str]:
 # ── Textos da interface (PT / EN) ─────────────────────────────────────────────
 UI = {
     'PT': {
-        'title': '🌧️ Gerador de Curvas IDF',
-        'subtitle': 'Intensidade – Duração – Frequência · Método de Gumbel + Taborga + Sherman',
-        'footer': 'Desenvolvido por <a href="https://pedrosoethe.vercel.app/engenheiro/soethe-ii" target="_blank">Soethe Infrastructure Inteligence</a>',
+        'title': 'SII-HiDRO-IDF',
+        'subtitle': 'Sistema Integrado de Hidrologia · Módulo de Curvas Intensidade-Duração-Frequência (IDF)',
+        'footer': 'Desenvolvido por <a href="https://pedrosoethe.vercel.app/engenheiro/soethe-ii" target="_blank">Soethe Infrastructure Intelligence</a> · SII-HiDRO v3.0',
         'sidebar_cfg': '⚙️ Configuração',
         'meta': 'Identificação',
         'resp': 'Responsável Técnico',
@@ -374,9 +419,9 @@ UI = {
         'stations_found_count': '{n} estações pluviométricas encontradas no raio de {r} km.',
     },
     'EN': {
-        'title': '🌧️ IDF Curve Generator',
-        'subtitle': 'Intensity – Duration – Frequency · Gumbel + Taborga + Sherman method',
-        'footer': 'Developed by <a href="https://pedrosoethe.vercel.app/engenheiro/soethe-ii" target="_blank">Soethe Infrastructure Inteligence</a>',
+        'title': 'SII-HiDRO-IDF',
+        'subtitle': 'Integrated Hydrology System · Intensity-Duration-Frequency (IDF) Curves Module',
+        'footer': 'Developed by <a href="https://pedrosoethe.vercel.app/engenheiro/soethe-ii" target="_blank">Soethe Infrastructure Intelligence</a> · SII-HiDRO v3.0',
         'sidebar_cfg': '⚙️ Configuration',
         'meta': 'Identification',
         'resp': 'Technical Responsible',
@@ -453,30 +498,45 @@ UI = {
 }
 
 
-# ── Estado da sessão ──────────────────────────────────────────────────────────
+# ── Estado da sessão (SII-HiDRO v3.0) ─────────────────────────────────────────
 def init_state():
-    st.session_state.setdefault('current_step', 1)       # Stepper linear: 1, 2, 3 ou 4
-    st.session_state.setdefault('ana_stations', [])       # [{codigo, nome, latitude, longitude, ...}]
-    st.session_state.setdefault('ana_series_text', '')    # texto manual ou baixado
-    st.session_state.setdefault('loaded_df', None)        # DataFrame unificado da série histórica
+    # ── Estado de dois eixos ──────────────────────────────────────────────────
+    st.session_state.setdefault('active_module', 'idf')       # 'projeto' | 'idf' | 'bacia' | 'vazao'
+    st.session_state.setdefault('step', 0)                    # índice da etapa dentro do módulo ativo
+    st.session_state.setdefault('project_dirty', False)        # booleano de modificação não gravada
+    st.session_state.setdefault('bacia_confirmada', False)     # confirmação visual da bacia hidrográfica
+    st.session_state.setdefault('lang', 'PT')
+
+    # ── Campos estruturantes do projeto (únicos e globais) ────────────────────
+    st.session_state.setdefault('responsavel', 'Pedro Luis Soethe Cursino')
+    st.session_state.setdefault('nome_obra', 'Rodovia BR-163 km 812')
+    st.session_state.setdefault('dispositivo', 'bueiro_grota')
+    st.session_state.setdefault('tr_projeto', 25)
+    st.session_state.setdefault('caminho_arquivo', None)
+
+    # ── Variáveis do módulo IDF ───────────────────────────────────────────────
+    st.session_state.setdefault('current_step', 1)            # Compatibilidade de stepper
+    st.session_state.setdefault('ana_stations', [])           # [{codigo, nome, latitude, longitude, ...}]
+    st.session_state.setdefault('ana_series_text', '')        # texto manual ou baixado
+    st.session_state.setdefault('loaded_df', None)            # DataFrame unificado da série histórica
     st.session_state.setdefault('results', None)
-    st.session_state.setdefault('calc_hash', None)        # Hash dos parâmetros no momento do cálculo
+    st.session_state.setdefault('calc_hash', None)            # Hash dos parâmetros no momento do cálculo
     st.session_state.setdefault('report_ctx', {})
-    st.session_state.setdefault('proj_lat', -23.0289)
-    st.session_state.setdefault('proj_lon', -45.5569)
-    st.session_state.setdefault('proj_loc', 'Taubaté - SP')
+    st.session_state.setdefault('proj_lat', -7.0375)
+    st.session_state.setdefault('proj_lon', -55.4186)
+    st.session_state.setdefault('proj_loc', 'Novo Progresso, PA')
     st.session_state.setdefault('estacao_input', '')
     st.session_state.setdefault('search_radius_km', 35)
-    st.session_state.setdefault('selection_mode', 'single')  # 'single' ou 'idw'
+    st.session_state.setdefault('selection_mode', 'single')   # 'single' ou 'idw'
     st.session_state.setdefault('idw_meta', None)
     st.session_state.setdefault('station_info', None)
-    st.session_state.setdefault('idw_p', 2.0)             # Expoente de distância IDW
+    st.session_state.setdefault('idw_p', 2.0)                 # Expoente de distância IDW
     st.session_state.setdefault('last_clicked_coords', None)
-    st.session_state.setdefault('uf_sel', 'SP')
+    st.session_state.setdefault('uf_sel', 'PA')
     st.session_state.setdefault('download_info', None)
-    st.session_state.setdefault('data_source_method', 'api') # 'api', 'csv', 'manual'
-    st.session_state.setdefault('api_source', 'hist')        # 'hist' ou 'tele'
-    st.session_state.setdefault('isozona_escolhida', 'B')
+    st.session_state.setdefault('data_source_method', 'api')  # 'api', 'csv', 'manual'
+    st.session_state.setdefault('api_source', 'hist')         # 'hist' ou 'tele'
+    st.session_state.setdefault('isozona_escolhida', 'F')
     st.session_state.setdefault('isozona_origem', 'Automática (detectada no mapa)')
     st.session_state.setdefault('limiar_cobertura_pct', 90.0)
     st.session_state.setdefault('excluir_incompletos', True)
@@ -486,6 +546,102 @@ def init_state():
 
 
 init_state()
+
+
+def mark_dirty():
+    """Marca o projeto com modificações pendentes de gravação (project_dirty = True)."""
+    st.session_state.project_dirty = True
+
+
+def module_status(mod: str) -> str:
+    """
+    Retorna o status do módulo: 'locked' | 'todo' | 'done'.
+    Regras estritas da especificação:
+    - idf: 'todo' assim que existe coordenada; 'done' quando results existe e physical_consistency['is_valid'] é True.
+    - bacia: 'todo' assim que existe coordenada; 'done' quando bacia_confirmada is True (confirmação visual).
+    - vazao: 'locked' enquanto idf ou bacia não estiverem done. Se ambos done: 'todo' (ou 'done' se q_projeto_m3s calculado).
+    - projeto: 'done' se salvo ou 'todo'.
+    """
+    m = str(mod).lower()
+    if m == 'projeto':
+        return 'done' if st.session_state.get('caminho_arquivo') else 'todo'
+
+    lat = st.session_state.get('proj_lat')
+    lon = st.session_state.get('proj_lon')
+    tem_coords = (lat is not None and lon is not None and (lat != 0.0 or lon != 0.0))
+
+    # Avaliação do status de IDF
+    idf_done = False
+    res = st.session_state.get('results')
+    if res and isinstance(res, dict):
+        pc = res.get('physical_consistency', {})
+        if pc.get('is_valid') is True:
+            idf_done = True
+
+    if m == 'idf':
+        if idf_done:
+            return 'done'
+        return 'todo' if tem_coords else 'locked'
+
+    # Avaliação do status de Bacia
+    bacia_confirmada = bool(st.session_state.get('bacia_confirmada', False))
+    if m == 'bacia':
+        if bacia_confirmada:
+            return 'done'
+        return 'todo' if tem_coords else 'locked'
+
+    # Avaliação do status de Vazão
+    if m == 'vazao':
+        if not (idf_done and bacia_confirmada):
+            return 'locked'
+        if st.session_state.get('q_projeto_m3s') is not None:
+            return 'done'
+        return 'todo'
+
+    return 'todo'
+
+
+def render_context_bar(lang: str):
+    """
+    Barra de contexto fixa logo abaixo da barra superior, visível em todos os módulos.
+    Exibe os campos estruturantes do projeto único:
+    proj_lat, proj_lon, proj_loc, isozona_escolhida, isozona_origem, responsavel,
+    nome_obra, dispositivo, tr_projeto, caminho_arquivo.
+    """
+    lat = st.session_state.get('proj_lat', 0.0)
+    lon = st.session_state.get('proj_lon', 0.0)
+    loc = st.session_state.get('proj_loc', '—')
+    iso = st.session_state.get('isozona_escolhida', '—')
+    iso_orig = st.session_state.get('isozona_origem', '')
+    resp = st.session_state.get('responsavel', '—')
+    obra = st.session_state.get('nome_obra', '—')
+    disp = st.session_state.get('dispositivo', '—')
+    tr = st.session_state.get('tr_projeto', 25)
+    arq = st.session_state.get('caminho_arquivo')
+    dirty = st.session_state.get('project_dirty', False)
+
+    arq_nome = Path(arq).name if arq else ('* Projeto não salvo' if dirty else 'Novo Projeto')
+    dirty_badge = " <span style='color:#d97706; font-weight:bold;' title='Modificações não salvas'>*</span>" if dirty else ""
+
+    lbl_loc = t('proj_ctx_loc', lang)
+    lbl_iso = t('proj_ctx_isozone', lang)
+    lbl_resp = t('proj_ctx_author', lang)
+    lbl_obra = t('proj_ctx_work', lang)
+    lbl_disp = t('proj_ctx_device', lang)
+    lbl_tr = t('proj_ctx_tr', lang)
+    lbl_arq = t('proj_ctx_file', lang)
+
+    html = f"""
+    <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:6px 12px; margin-top:-4px; margin-bottom:12px; font-size:0.83rem; color:#334155; display:flex; flex-wrap:wrap; gap:16px; align-items:center;">
+        <div>📍 <b>{lbl_loc}:</b> {loc} <span style="color:#64748b; font-size:0.75rem;">({lat:.4f}°, {lon:.4f}°)</span></div>
+        <div>🌧️ <b>{lbl_iso}:</b> <span style="background-color:#e0f2fe; color:#0369a1; padding:1px 6px; border-radius:4px; font-weight:700;">{iso}</span> <span style="color:#64748b; font-size:0.75rem;">({iso_orig})</span></div>
+        <div>👤 <b>{lbl_resp}:</b> {resp}</div>
+        <div>🏗️ <b>{lbl_obra}:</b> {obra} &middot; <i>{disp}</i></div>
+        <div>⏱️ <b>{lbl_tr}:</b> {tr} anos</div>
+        <div>📁 <b>{lbl_arq}:</b> <code style="color:#0f766e; background:#f0fdfa; padding:1px 4px; border-radius:3px;">{arq_nome}</code>{dirty_badge}</div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def calcular_hash_inputs(
@@ -521,74 +677,165 @@ def calcular_hash_inputs(
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
-# ── Barra lateral: identificação, idioma e reset ──────────────────────────────
-lang_label = st.sidebar.radio('🌐 Idioma / Language', ['PT 🇧🇷', 'EN 🇺🇸'], horizontal=True)
-lang = lang_label.split()[0]
+# ── CSS de Layout Moderno e Regra das 4 Cores ─────────────────────────────────
+st.markdown("""
+<style>
+/* Remoção de cabeçalhos vazios e layout compacto sem sidebar */
+header[data-testid="stHeader"] {
+    background: transparent !important;
+}
+div.block-container {
+    padding-top: 1.2rem !important;
+    padding-bottom: 2rem !important;
+}
+/* Destaque âmbar estrito (#d97706) para o botão Salvar com alterações pendentes */
+div[data-testid="stButton"] button:has(p:contains("*")) {
+    background-color: #d97706 !important;
+    border-color: #b45309 !important;
+    color: #ffffff !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── Barra Superior (Horizontal Completa) ──────────────────────────────────────
+lang = st.session_state.get('lang', 'PT')
 L = UI[lang]
+responsavel = st.session_state.get('responsavel', 'Pedro Luis Soethe Cursino')
+localizacao = st.session_state.get('proj_loc', 'Novo Progresso, PA')
+estacao = st.session_state.get('estacao_input', '')
 
-st.sidebar.header(L['sidebar_cfg'])
+c_brand, c_tabs, c_actions = st.columns([2.6, 5.0, 2.4], vertical_alignment="center")
 
-with st.sidebar.expander('🏷️ ' + L['meta'], expanded=True):
-    responsavel = st.text_input(L['resp'], value='Pedro Luis Soethe Cursino')
-    localizacao = st.text_input(L['loc'], value=st.session_state.proj_loc)
-    st.session_state.proj_loc = localizacao
-    estacao = st.text_input(L['est'], value=st.session_state.estacao_input)
-    st.session_state.estacao_input = estacao
+with c_brand:
+    st.markdown(render_brand_html(st.session_state.active_module, font_size='1.55rem'), unsafe_allow_html=True)
 
-st.sidebar.markdown(f"**Versão:** `Soethe·ii / SII·IDF v2.1`")
+with c_tabs:
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    modules_nav = [
+        ('projeto', '📁', t('mod_projeto', lang)),
+        ('idf',     '🌧️', t('mod_idf', lang)),
+        ('bacia',   '🏞️', t('mod_bacia', lang)),
+        ('vazao',   '🌊', t('mod_vazao', lang)),
+    ]
+    for m_idx, (mod_id, icon, mod_name) in enumerate(modules_nav):
+        status = module_status(mod_id)
+        status_dot = "🟢" if status == 'done' else ("⚪" if status == 'todo' else "🔒")
+        label = f"{icon} {mod_name} {status_dot}"
+        is_active = (st.session_state.active_module == mod_id)
+        btn_type = "primary" if is_active else "secondary"
+        is_locked = (status == 'locked')
+        tooltip = t('tooltip_locked_vazao', lang) if is_locked else f"Módulo {mod_name} ({t('status_' + status, lang)})"
 
-if st.sidebar.button("🔄 " + t('btn_reset_analysis', lang), use_container_width=True):
-    st.session_state.results = None
-    st.session_state.calc_hash = None
-    st.session_state.loaded_df = None
-    st.session_state.ana_series_text = ''
-    st.session_state.download_info = None
-    st.session_state.year_start = None
-    st.session_state.year_end = None
-    st.session_state.current_step = 1
-    st.rerun()
+        with [col_m1, col_m2, col_m3, col_m4][m_idx]:
+            if st.button(
+                label,
+                key=f"top_tab_{mod_id}",
+                disabled=is_locked,
+                help=tooltip,
+                use_container_width=True,
+                type=btn_type,
+            ):
+                if not is_locked and st.session_state.active_module != mod_id:
+                    st.session_state.active_module = mod_id
+                    st.session_state.step = 0
+                    st.rerun()
 
-st.sidebar.markdown(
-    f"<div style='color:#888; font-size:0.8em; padding-top:1rem;'>{L['footer']}</div>",
-    unsafe_allow_html=True,
-)
+with c_actions:
+    c_abrir, c_salvar, c_pop = st.columns([1.0, 1.2, 0.8])
+    with c_abrir:
+        if st.button(f"📂 {t('btn_open', lang)}", key="top_action_open", use_container_width=True):
+            st.session_state.active_module = 'projeto'
+            st.session_state.step = 0
+            st.rerun()
 
-# ── Cabeçalho Principal e Stepper em 4 Etapas ─────────────────────────────────
-st.title(L['title'])
-st.caption(L['subtitle'])
+    with c_salvar:
+        is_dirty = st.session_state.get('project_dirty', False)
+        save_label = f"💾 {t('btn_save', lang)} *" if is_dirty else f"💾 {t('btn_save', lang)}"
+        save_type = "primary" if is_dirty else "secondary"
+        if st.button(save_label, key="top_action_save", use_container_width=True, type=save_type,
+                     help="Modificações pendentes não salvas! Clique para salvar." if is_dirty else "Salvar projeto (.siih)"):
+            st.session_state.active_module = 'projeto'
+            st.session_state.step = 1
+            st.rerun()
 
-curr_s = st.session_state.current_step
-c_s1, c_s2, c_s3, c_s4 = st.columns(4)
+    with c_pop:
+        with st.popover("⚙️", use_container_width=True, help="Identificação do Responsável e Configurações"):
+            st.markdown(f"#### ⚙️ {t('popover_title', lang)}")
+            novo_resp = st.text_input(L['resp'], value=st.session_state.get('responsavel', 'Pedro Luis Soethe Cursino'))
+            if novo_resp != st.session_state.get('responsavel'):
+                st.session_state.responsavel = novo_resp
+                st.session_state.project_dirty = True
 
-with c_s1:
-    btn_type = 'primary' if curr_s == 1 else 'secondary'
-    icon = '📍 ' if curr_s == 1 else ('✅ ' if curr_s > 1 else '1️⃣ ')
-    if st.button(f"{icon}{t('stepper_step1', lang)}", key='nav_s1', use_container_width=True, type=btn_type):
-        st.session_state.current_step = 1
-        st.rerun()
+            novo_obra = st.text_input("Nome da Obra", value=st.session_state.get('nome_obra', 'Rodovia BR-163 km 812'))
+            if novo_obra != st.session_state.get('nome_obra'):
+                st.session_state.nome_obra = novo_obra
+                st.session_state.project_dirty = True
 
-with c_s2:
-    btn_type = 'primary' if curr_s == 2 else 'secondary'
-    icon = '🌧️ ' if curr_s == 2 else ('✅ ' if curr_s > 2 else '2️⃣ ')
-    if st.button(f"{icon}{t('stepper_step2', lang)}", key='nav_s2', use_container_width=True, type=btn_type):
-        st.session_state.current_step = 2
-        st.rerun()
+            novo_disp = st.text_input("Dispositivo", value=st.session_state.get('dispositivo', 'bueiro_grota'))
+            if novo_disp != st.session_state.get('dispositivo'):
+                st.session_state.dispositivo = novo_disp
+                st.session_state.project_dirty = True
 
-with c_s3:
-    btn_type = 'primary' if curr_s == 3 else 'secondary'
-    icon = '🔍 ' if curr_s == 3 else ('✅ ' if curr_s > 3 else '3️⃣ ')
-    if st.button(f"{icon}{t('stepper_step3', lang)}", key='nav_s3', use_container_width=True, type=btn_type):
-        st.session_state.current_step = 3
-        st.rerun()
+            novo_tr = st.number_input("TR de Projeto (anos)", min_value=2, max_value=500, value=int(st.session_state.get('tr_projeto', 25)))
+            if novo_tr != st.session_state.get('tr_projeto'):
+                st.session_state.tr_projeto = int(novo_tr)
+                st.session_state.project_dirty = True
 
-with c_s4:
-    btn_type = 'primary' if curr_s == 4 else 'secondary'
-    icon = '📊 ' if curr_s == 4 else '4️⃣ '
-    if st.button(f"{icon}{t('stepper_step4', lang)}", key='nav_s4', use_container_width=True, type=btn_type):
-        st.session_state.current_step = 4
-        st.rerun()
+            st.divider()
+            lang_opts = ['PT 🇧🇷', 'EN 🇺🇸']
+            curr_l_idx = 0 if st.session_state.get('lang', 'PT') == 'PT' else 1
+            sel_l_lbl = st.radio('🌐 Idioma / Language', lang_opts, index=curr_l_idx, horizontal=True)
+            sel_l = sel_l_lbl.split()[0]
+            if sel_l != st.session_state.get('lang', 'PT'):
+                st.session_state.lang = sel_l
+                st.rerun()
+
+            st.caption(f"**Versão:** `SII-HiDRO v3.0`")
+            if st.button("🔄 " + t('btn_reset_analysis', lang), use_container_width=True):
+                st.session_state.results = None
+                st.session_state.calc_hash = None
+                st.session_state.loaded_df = None
+                st.session_state.ana_series_text = ''
+                st.session_state.download_info = None
+                st.session_state.year_start = None
+                st.session_state.year_end = None
+                st.session_state.step = 0
+                st.session_state.current_step = 1
+                st.session_state.project_dirty = False
+                st.rerun()
+
+# ── Barra de Contexto Fixa do Projeto ─────────────────────────────────────────
+render_context_bar(lang)
+
+# ── Trilho de Etapas do Módulo Ativo ──────────────────────────────────────────
+MODULE_STEPS = {
+    'projeto': [('📂', 'stepper_proj_open'), ('💾', 'stepper_proj_save')],
+    'idf':     [('📍', 'stepper_step1'), ('🌧️', 'stepper_step2'), ('🔍', 'stepper_step3'), ('📊', 'stepper_step4')],
+    'bacia':   [('📐', 'stepper_basin_delineation'), ('🌾', 'stepper_basin_inputs')],
+    'vazao':   [('⏱️', 'stepper_flow_tc'), ('🌊', 'stepper_flow_design')],
+}
+
+active_mod = st.session_state.active_module
+steps = MODULE_STEPS.get(active_mod, MODULE_STEPS['idf'])
+if st.session_state.step >= len(steps):
+    st.session_state.step = 0
+
+step_cols = st.columns(len(steps))
+for s_idx, (icon, label_key) in enumerate(steps):
+    with step_cols[s_idx]:
+        is_active = (st.session_state.step == s_idx)
+        btn_type = "primary" if is_active else "secondary"
+        step_lbl = f"{icon} {t(label_key, lang)}"
+        if st.button(step_lbl, key=f"step_btn_{active_mod}_{s_idx}", use_container_width=True, type=btn_type):
+            st.session_state.step = s_idx
+            if active_mod == 'idf':
+                st.session_state.current_step = s_idx + 1
+            st.rerun()
 
 st.divider()
+
+
 def figuras(results):
     return (
         fig_historical_series(results['series_df'], lang),
@@ -600,14 +847,17 @@ def figuras(results):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NAVEGAÇÃO LINEAR DO WORKFLOW EM 4 ETAPAS (STEPPER)
+# DISPATCH DOS MÓDULOS (PROJETO, IDF, BACIA, VAZÃO)
 # ══════════════════════════════════════════════════════════════════════════════
+if active_mod == 'idf':
+    curr_s = st.session_state.step + 1
+    st.session_state.current_step = curr_s
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ETAPA 1: 📍 Localização do Projeto e Isozona
-# ──────────────────────────────────────────────────────────────────────────────
-if curr_s == 1:
-    st.subheader(f"📍 {t('stepper_step1', lang)}")
+    # ──────────────────────────────────────────────────────────────────────────
+    # ETAPA 1: 📍 Localização do Projeto e Isozona
+    # ──────────────────────────────────────────────────────────────────────────
+    if curr_s == 1:
+        st.subheader(f"📍 {t('stepper_step1', lang)}")
     st.caption(
         "Busque o endereço ou município do projeto, ajuste as coordenadas e o raio de busca no mapa, e confirme a Isozona de Taborga detectada."
         if lang == 'PT'
@@ -889,6 +1139,7 @@ if curr_s == 1:
     st.divider()
     if st.button(t('btn_confirm_loc', lang), type='primary', use_container_width=True):
         st.session_state.current_step = 2
+        st.session_state.step = 1
         st.rerun()
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -906,6 +1157,7 @@ elif curr_s == 2:
         )
         if c_r2.button("✏️ Alterar Localização", use_container_width=True):
             st.session_state.current_step = 1
+            st.session_state.step = 0
             st.rerun()
 
     metodo = st.radio(
@@ -1265,6 +1517,7 @@ elif curr_s == 2:
         st.divider()
         if st.button("Avançar para Diagnóstico e Parâmetros ➡️", type='primary', use_container_width=True):
             st.session_state.current_step = 3
+            st.session_state.step = 2
             st.rerun()
     else:
         st.info("Baixe a série da ANA acima ou carregue um arquivo/dados manuais para prosseguir.")
@@ -1279,6 +1532,7 @@ elif curr_s == 3:
         st.warning("Nenhum dado pluviométrico foi carregado ainda. Por favor, volte para a Etapa 2 para baixar ou inserir dados.")
         if st.button("⬅️ Voltar para Etapa 2", use_container_width=True):
             st.session_state.current_step = 2
+            st.session_state.step = 1
             st.rerun()
     else:
         df_base = st.session_state.loaded_df.copy()
@@ -1407,6 +1661,8 @@ elif curr_s == 3:
                     'search_radius_km': float(st.session_state.get('search_radius_km', 35)),
                 }
                 st.session_state.current_step = 4
+                st.session_state.step = 3
+                st.session_state.project_dirty = True
                 st.rerun()
             except UserError as e:
                 st.error(str(e))
@@ -1424,6 +1680,7 @@ elif curr_s == 4:
         st.info(L['no_data_yet'])
         if st.button("⬅️ Ir para Etapa 3 (Diagnóstico e Execução)", use_container_width=True):
             st.session_state.current_step = 3
+            st.session_state.step = 2
             st.rerun()
     else:
         current_hash = calcular_hash_inputs(
@@ -1446,6 +1703,7 @@ elif curr_s == 4:
             st.warning(f"⚠️ **{t('hash_warning_title', lang)}**\n\n{t('hash_warning_desc', lang)}")
             if st.button(f"⚡ {t('btn_run_analysis', lang)} (Recalcular com parâmetros atuais)", type='primary', use_container_width=True):
                 st.session_state.current_step = 3
+                st.session_state.step = 2
                 st.rerun()
 
         cons = results.get('physical_consistency', {})
@@ -1570,6 +1828,11 @@ elif curr_s == 4:
         ctx = st.session_state.report_ctx
         d1, d2 = st.columns(2)
 
+        is_consolidado = bool(st.session_state.get('bacia_results') and st.session_state.get('vazao_results'))
+        rep_app_name = 'SII-HiDRO' if is_consolidado else brand_text('idf')
+        pdf_fn = 'memorial_calculo_siihidro.pdf' if is_consolidado else 'memorial_calculo_idf.pdf'
+        docx_fn = 'memorial_calculo_siihidro.docx' if is_consolidado else 'memorial_calculo_idf.docx'
+
         with d1:
             try:
                 pdf_bytes = generate_pdf_report(
@@ -1583,11 +1846,14 @@ elif curr_s == 4:
                     idw_meta=ctx.get('idw_meta'),
                     station_info=ctx.get('station_info'),
                     search_radius_km=float(ctx.get('search_radius_km', 35)),
+                    app_name=rep_app_name,
+                    bacia_results=st.session_state.get('bacia_results'),
+                    vazao_results=st.session_state.get('vazao_results'),
                 ) if not params_changed else b''
                 st.download_button(
                     L['dl_pdf'],
                     data=pdf_bytes,
-                    file_name='memorial_calculo_idf.pdf',
+                    file_name=pdf_fn,
                     mime='application/pdf',
                     use_container_width=True,
                     disabled=params_changed,
@@ -1608,17 +1874,961 @@ elif curr_s == 4:
                     idw_meta=ctx.get('idw_meta'),
                     station_info=ctx.get('station_info'),
                     search_radius_km=float(ctx.get('search_radius_km', 35)),
+                    app_name=rep_app_name,
+                    bacia_results=st.session_state.get('bacia_results'),
+                    vazao_results=st.session_state.get('vazao_results'),
                 ) if not params_changed else b''
                 st.download_button(
                     L['dl_word'],
                     data=docx_bytes,
-                    file_name='memorial_calculo_idf.docx',
+                    file_name=docx_fn,
                     mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                     use_container_width=True,
                     disabled=params_changed,
                 )
             except Exception as e:
                 st.warning(f'Word: {e}')
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DISPATCH DO MÓDULO PROJETO (ABRIR OU CRIAR · SALVAR)
+# ══════════════════════════════════════════════════════════════════════════════
+elif active_mod == 'projeto':
+    curr_step_proj = st.session_state.get('step', 0)
+    if curr_step_proj == 0:
+        st.subheader(f"📂 {t('stepper_proj_open', lang)}")
+        st.caption("Crie um novo projeto hidrológico ou abra um projeto existente (.siih)." if lang == 'PT' else "Create a new hydrological project or open an existing (.siih) project.")
+
+        c_novo, c_abrir_card = st.columns(2)
+        with c_novo:
+            with st.container(border=True):
+                st.markdown("### ✨ " + ("Novo Projeto" if lang == 'PT' else "New Project"))
+                st.write(
+                    "Inicia um projeto hidrológico em branco, mantendo o padrão de coordenadas e parâmetros configurados."
+                    if lang == 'PT' else
+                    "Starts a blank hydrological project, maintaining default configured coordinates and parameters."
+                )
+                if st.button("➕ " + ("Iniciar Novo Projeto" if lang == 'PT' else "Start New Project"), type="primary", use_container_width=True):
+                    st.session_state.caminho_arquivo = None
+                    st.session_state.results = None
+                    st.session_state.calc_hash = None
+                    st.session_state.loaded_df = None
+                    st.session_state.ana_series_text = ''
+                    st.session_state.download_info = None
+                    st.session_state.bacia_confirmada = False
+                    st.session_state.project_dirty = False
+                    st.session_state.active_module = 'idf'
+                    st.session_state.step = 0
+                    st.session_state.current_step = 1
+                    st.rerun()
+
+        with c_abrir_card:
+            with st.container(border=True):
+                st.markdown("### 📂 " + ("Abrir Arquivo de Projeto (.siih)" if lang == 'PT' else "Open Project File (.siih)"))
+                st.write(
+                    "Abra um projeto salvo para auditar, revisar ou continuar análises hidrológicas."
+                    if lang == 'PT' else
+                    "Open a saved project to audit, review or continue hydrological analyses."
+                )
+                uploaded_siih = st.file_uploader(
+                    "Carregar arquivo .siih" if lang == 'PT' else "Upload .siih file",
+                    type=["siih", "json"],
+                    help="Arquivo de projeto SII-HiDRO (.siih) em conformidade com o esquema siih/1" if lang == 'PT' else "SII-HiDRO project file (.siih) conforming to siih/1 schema",
+                    key="proj_file_uploader",
+                )
+                if uploaded_siih is not None:
+                    try:
+                        proj_loaded = project.abrir_projeto(uploaded_siih.getvalue(), recalcular=True)
+                        audit = proj_loaded["status_auditoria"]
+
+                        st.divider()
+                        st.markdown("#### 🛡️ " + ("Auditoria de Integridade e Revalidação (.siih)" if lang == 'PT' else "Integrity & Revalidation Audit (.siih)"))
+
+                        # 1. Integridade do Hash
+                        if audit.get("hash_adulterado"):
+                            st.error(
+                                "🚨 " + ("Hash SHA-256 Adulterado! Os dados pluviométricos ou parâmetros divergem do snapshot original. Arquivo possivelmente corrompido ou editado manualmente."
+                                         if lang == 'PT' else
+                                         "Tampered SHA-256 Hash! Rainfall data or parameters diverge from original snapshot. File possibly corrupted or manually edited.")
+                            )
+                        else:
+                            st.success(
+                                "🟢 " + ("Integridade SHA-256 Verificada: Os dados de entrada conferem rigorosamente com a assinatura criptográfica."
+                                         if lang == 'PT' else
+                                         "SHA-256 Integrity Verified: Input data strictly matches cryptographic signature.")
+                            )
+
+                        # 2. Versão do App e Changelog
+                        aceite_versao = True
+                        if audit.get("versao_anterior"):
+                            st.warning(
+                                "⚠️ " + (f"Projeto criado na versão **{audit['app_version']}** (versão atual do app: **{project.CURRENT_APP_VERSION}**)."
+                                         if lang == 'PT' else
+                                         f"Project created in version **{audit['app_version']}** (current app version: **{project.CURRENT_APP_VERSION}**).")
+                            )
+                            with st.expander("📜 " + ("Ver Mudanças Metodológicas entre Versões (CHANGELOG_BEHAVIOR.md)" if lang == 'PT' else "View Methodological Changes between Versions (CHANGELOG_BEHAVIOR.md)"), expanded=False):
+                                st.markdown(audit.get("changelog_behavior", ""))
+                            aceite_versao = st.checkbox(
+                                "Declaro ciência das mudanças de formulação e comportamento técnico entre as versões."
+                                if lang == 'PT' else
+                                "I acknowledge the methodological changes and technical behavior between versions.",
+                                key="aceite_versao_anterior",
+                                value=False,
+                            )
+
+                        # 3. Divergência de Isozona
+                        iso_escolhida = audit.get("isozona_gravada")
+                        if audit.get("isozona_divergente"):
+                            loc_dict = proj_loaded['dados'].get('local', {})
+                            st.warning(
+                                "⚠️ " + (f"Divergência de Isozona Geográfica: As coordenadas ({loc_dict.get('lat', 0):.4f}°, {loc_dict.get('lon', 0):.4f}°) "
+                                         f"correspondem à Isozona **{audit['isozona_detectada']}** no mapa oficial, mas o projeto foi gravado com a Isozona **{audit['isozona_gravada']}**."
+                                         if lang == 'PT' else
+                                         f"Geographical Isozone Divergence: Coordinates ({loc_dict.get('lat', 0):.4f}°, {loc_dict.get('lon', 0):.4f}°) "
+                                         f"correspond to Isozone **{audit['isozona_detectada']}** on the official map, but project was saved with Isozone **{audit['isozona_gravada']}**.")
+                            )
+                            iso_opts = [
+                                f"{audit['isozona_gravada']} (" + ("Manter gravada no arquivo" if lang == 'PT' else "Keep saved in file") + ")",
+                                f"{audit['isozona_detectada']} (" + ("Adotar detectada nas coordenadas" if lang == 'PT' else "Adopt detected at coordinates") + ")"
+                            ]
+                            iso_sel_radio = st.radio(
+                                "Escolha qual Isozona adotar para os cálculos:" if lang == 'PT' else "Choose which Isozone to adopt for calculations:",
+                                iso_opts,
+                                index=0,
+                                key="radio_iso_abertura",
+                            )
+                            iso_escolhida = iso_sel_radio.split()[0]
+
+                        # 4. Divergência de Resultados (> 0,5%)
+                        if audit.get("divergencia_critica"):
+                            st.warning(
+                                "⚠️ " + ("Divergência nos Resultados Recalculados a Quente (> 0,5% em relação ao snapshot gravado):"
+                                         if lang == 'PT' else
+                                         "Divergence in Hot Recalculated Results (> 0.5% compared to saved snapshot):")
+                            )
+                            df_div = pd.DataFrame([
+                                {
+                                    'Métrica / Parâmetro': k,
+                                    'Snapshot Gravado': f"{v['snapshot']:.4f}",
+                                    'Recalculado a Quente': f"{v['recalculado']:.4f}",
+                                    'Divergência (%)': f"{v['diff_pct']:.2f}%",
+                                }
+                                for k, v in audit.get("divergencias_metricas", {}).items()
+                            ])
+                            st.dataframe(df_div, use_container_width=True, hide_index=True)
+                        elif proj_loaded.get("recalculado"):
+                            st.success(
+                                "✅ " + ("Recálculo Hidrológico Concluído: Resultados a quente idênticos ao snapshot do arquivo."
+                                         if lang == 'PT' else
+                                         "Hydrological Recalculation Succeeded: Hot results match file snapshot.")
+                            )
+
+                        # Botão para efetivar o carregamento no session_state
+                        pode_abrir = True
+                        if audit.get("versao_anterior") and not aceite_versao:
+                            pode_abrir = False
+                            st.caption("⚠️ " + ("Marque a confirmação de ciência da versão anterior acima para habilitar o carregamento."
+                                                if lang == 'PT' else
+                                                "Check the version acknowledgment above to enable loading."))
+
+                        if st.button("📥 " + ("Carregar Projeto no SII-HiDRO" if lang == 'PT' else "Load Project into SII-HiDRO"), type="primary", use_container_width=True, disabled=not pode_abrir):
+                            project.carregar_projeto_no_session_state(proj_loaded, isozona_escolhida=iso_escolhida)
+                            st.success("✅ " + ("Projeto restaurado com sucesso! Redirecionando para o Módulo IDF..."
+                                               if lang == 'PT' else
+                                               "Project successfully restored! Redirecting to IDF Module..."))
+                            st.rerun()
+
+                    except Exception as e:
+                        st.error(f"❌ Erro ao abrir arquivo .siih: {e}")
+
+        st.divider()
+        st.markdown("### 📋 " + ("Informações Estruturantes do Projeto Ativo" if lang == 'PT' else "Active Project Structural Information"))
+        with st.container(border=True):
+            col_i1, col_i2 = st.columns(2)
+            with col_i1:
+                st.markdown(f"**{t('proj_ctx_author', lang)}:** {st.session_state.get('responsavel', '—')}")
+                st.markdown(f"**{t('proj_ctx_work', lang)}:** {st.session_state.get('nome_obra', '—')}")
+                st.markdown(f"**{t('proj_ctx_device', lang)}:** {st.session_state.get('dispositivo', '—')}")
+                st.markdown(f"**{t('proj_ctx_tr', lang)}:** {st.session_state.get('tr_projeto', 25)} " + ("anos" if lang == 'PT' else "years"))
+            with col_i2:
+                st.markdown(f"**{t('proj_ctx_loc', lang)}:** {st.session_state.get('proj_loc', '—')}")
+                st.markdown(f"**Coordenadas:** `{st.session_state.get('proj_lat', 0.0):.4f}°`, `{st.session_state.get('proj_lon', 0.0):.4f}°`")
+                st.markdown(f"**{t('proj_ctx_isozone', lang)}:** {st.session_state.get('isozona_escolhida', '—')} (*{st.session_state.get('isozona_origem', '')}*)")
+                dirty_status = ("⚠️ Alterações pendentes de gravação" if st.session_state.get('project_dirty') else "✅ Sem alterações pendentes") if lang == 'PT' else ("⚠️ Unsaved pending changes" if st.session_state.get('project_dirty') else "✅ No pending changes")
+                st.markdown(f"**Status:** {dirty_status}")
+
+    elif curr_step_proj == 1:
+        st.subheader(f"💾 {t('stepper_proj_save', lang)}")
+        st.caption("Grave o projeto hidrológico no formato auditável e versionado .siih." if lang == 'PT' else "Save hydrological project in auditable and versioned .siih format.")
+
+        st.markdown(f"### 📜 {t('contract_tbl_title', lang)}")
+        st.markdown(
+            "> **" + ("Regra de Ouro da Auditoria SII-HiDRO:" if lang == 'PT' else "SII-HiDRO Audit Golden Rule:") + "** "
+            "*" + ("Guarde entrada, recalcule saída." if lang == 'PT' else "Save input, recalculate output.") + "* " +
+            ("Séries brutas, decisões, justificativas e o polígono da bacia são entrada e ficam gravados. "
+             "Gumbel, Sherman, matriz IDF e vazão são saída, nascem de novo a cada abertura, e o snapshot gravado "
+             "serve estritamente para detecção de divergências de versão."
+             if lang == 'PT' else
+             "Raw series, decisions, rationales and the basin polygon are input and remain stored. "
+             "Gumbel, Sherman, IDF matrix and discharge are output, recalculated on each open, and the stored snapshot "
+             "serves strictly for version divergence detection.")
+        )
+
+        df_contrato = pd.DataFrame([
+            {
+                t('col_contract_comp', lang): "Metadados & Identificação" if lang == 'PT' else "Metadata & Identification",
+                t('col_contract_type', lang): "Entrada" if lang == 'PT' else "Input",
+                t('col_contract_saved', lang): "Sim (Responsável, Obra, Dispositivo, TR)" if lang == 'PT' else "Yes (Author, Work, Device, TR)",
+                t('col_contract_open', lang): "Restaurado no session_state" if lang == 'PT' else "Restored into session_state",
+            },
+            {
+                t('col_contract_comp', lang): "Localização & Isozona" if lang == 'PT' else "Location & Isozone",
+                t('col_contract_type', lang): "Entrada" if lang == 'PT' else "Input",
+                t('col_contract_saved', lang): "Sim (Lat, Lon WGS84, Isozona, Origem, Justificativa)" if lang == 'PT' else "Yes (Lat, Lon WGS84, Isozone, Source, Rationale)",
+                t('col_contract_open', lang): "Restaurado e revalidado geograficamente" if lang == 'PT' else "Restored and geographically revalidated",
+            },
+            {
+                t('col_contract_comp', lang): "Séries Pluviométricas Brutas" if lang == 'PT' else "Raw Rainfall Series",
+                t('col_contract_type', lang): "Entrada" if lang == 'PT' else "Input",
+                t('col_contract_saved', lang): "Sim (Anos, Chuvas, Dias Válidos por estação/IDW)" if lang == 'PT' else "Yes (Years, Rainfall, Valid Days per station/IDW)",
+                t('col_contract_open', lang): "Restaurado (auditável sem internet)" if lang == 'PT' else "Restored (auditable without internet)",
+            },
+            {
+                t('col_contract_comp', lang): "Decisões e Filtros do Projetista" if lang == 'PT' else "Designer Decisions & Filters",
+                t('col_contract_type', lang): "Entrada" if lang == 'PT' else "Input",
+                t('col_contract_saved', lang): "Sim (Filtros, Limiares, Anos Reincluídos)" if lang == 'PT' else "Yes (Filters, Thresholds, Reincluded Years)",
+                t('col_contract_open', lang): "Restaurado para aplicação no pipeline" if lang == 'PT' else "Restored for execution in pipeline",
+            },
+            {
+                t('col_contract_comp', lang): "Polígono & MDE da Bacia" if lang == 'PT' else "Basin Polygon & DEM",
+                t('col_contract_type', lang): "Entrada" if lang == 'PT' else "Input",
+                t('col_contract_saved', lang): "Sim (GeoJSON WGS84, Exutório, Metadados MDE)" if lang == 'PT' else "Yes (GeoJSON WGS84, Outlet, DEM Metadata)",
+                t('col_contract_open', lang): "Restaurado (reprojeção SIRGAS 2000 UTM)" if lang == 'PT' else "Restored (SIRGAS 2000 UTM reprojection)",
+            },
+            {
+                t('col_contract_comp', lang): "Ajustes Gumbel, Sherman & Curvas IDF" if lang == 'PT' else "Gumbel, Sherman Fits & IDF Curves",
+                t('col_contract_type', lang): "Saída" if lang == 'PT' else "Output",
+                t('col_contract_saved', lang): "Apenas snapshot de comparação (μ, σ, A, B, C, D, hash)" if lang == 'PT' else "Comparison snapshot only (μ, σ, A, B, C, D, hash)",
+                t('col_contract_open', lang): "RECALCULADO A QUENTE (alerta se > 0,5%)" if lang == 'PT' else "HOT RECALCULATED (alert if > 0.5%)",
+            },
+            {
+                t('col_contract_comp', lang): "Tempos de Concentração & Vazão" if lang == 'PT' else "Times of Concentration & Discharge",
+                t('col_contract_type', lang): "Saída" if lang == 'PT' else "Output",
+                t('col_contract_saved', lang): "Apenas snapshot de comparação (tc e Q de projeto)" if lang == 'PT' else "Comparison snapshot only (tc and design Q)",
+                t('col_contract_open', lang): "RECALCULADO A QUENTE com as curvas IDF" if lang == 'PT' else "HOT RECALCULATED with IDF curves",
+            },
+        ])
+        st.dataframe(df_contrato, use_container_width=True, hide_index=True)
+
+        st.divider()
+        with st.container(border=True):
+            st.markdown("### 💾 " + ("Gravar Arquivo de Projeto (.siih)" if lang == 'PT' else "Save Project File (.siih)"))
+            caminho_atual = st.session_state.get('caminho_arquivo')
+            if caminho_atual:
+                st.markdown(f"**{t('proj_ctx_file', lang)}:** `{caminho_atual}`")
+            else:
+                st.markdown(f"**{t('proj_ctx_file', lang)}:** *" + ("Novo Projeto (ainda não salvo em disco)" if lang == 'PT' else "New Project (not saved to disk yet)") + "*")
+
+            if st.session_state.get('project_dirty', False):
+                st.warning("⚠️ " + ("Há alterações pendentes no projeto que ainda não foram salvas." if lang == 'PT' else "There are pending unsaved changes in the project."))
+            else:
+                st.success("✅ " + ("Todas as alterações do projeto estão salvas." if lang == 'PT' else "All project changes are saved."))
+
+            try:
+                siih_bytes = project.salvar_projeto(filepath=None, state=st.session_state)
+                obra_slug = st.session_state.get('nome_obra', 'hidro').replace(' ', '_').replace('/', '-').lower()
+                nome_sugestao = f"projeto_{obra_slug}.siih"
+                tamanho_kb = len(siih_bytes) / 1024
+                comp_tag = " (Gzip Comprimido)" if siih_bytes.startswith(b'\x1f\x8b') else " (JSON UTF-8)"
+
+                c_save_btn, c_save_info = st.columns([1.5, 2.5])
+                with c_save_btn:
+                    if st.download_button(
+                        label=f"💾 {t('btn_save', lang)} (.siih)",
+                        data=siih_bytes,
+                        file_name=nome_sugestao,
+                        mime="application/octet-stream",
+                        type="primary" if st.session_state.get('project_dirty') else "secondary",
+                        use_container_width=True,
+                    ):
+                        st.session_state.project_dirty = False
+                        st.session_state.caminho_arquivo = nome_sugestao
+                        st.success("✅ " + ("Projeto baixado e salvo com sucesso!" if lang == 'PT' else "Project downloaded and saved successfully!"))
+                        st.rerun()
+
+                with c_save_info:
+                    st.caption(f"**Arquivo:** `{nome_sugestao}` ({tamanho_kb:.1f} KB){comp_tag} · Esquema: `siih/1`")
+            except Exception as e:
+                st.error(f"Erro ao gerar arquivo do projeto: {e}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DISPATCH DO MÓDULO BACIA (DELINEAÇÃO · INSUMOS E PARÂMETROS)
+# ══════════════════════════════════════════════════════════════════════════════
+elif active_mod == 'bacia':
+    curr_step_bacia = st.session_state.get('step', 0)
+    p_lat = st.session_state.get('proj_lat')
+    p_lon = st.session_state.get('proj_lon')
+    p_loc = st.session_state.get('proj_loc', '—')
+
+    if p_lat is None or p_lon is None or (p_lat == 0.0 and p_lon == 0.0):
+        st.error("🔒 **Coordenadas do projeto não definidas.** Por favor, localize o projeto no Módulo IDF ou no cabeçalho.")
+    else:
+        b_res = st.session_state.get('bacia_results')
+
+        # ──────────────────────────────────────────────────────────────────────
+        # ETAPA 0: 📐 Delineação & Divisor Topográfico
+        # ──────────────────────────────────────────────────────────────────────
+        if curr_step_bacia == 0:
+            st.subheader(f"📐 {t('stepper_basin_delineation', lang)}")
+            st.caption(
+                "Delineie o divisor de águas a partir do MDE e inspecione o polígono sobre a imagem de satélite. "
+                "A confirmação visual explícita é obrigatória para habilitar o Módulo Vazão."
+                if lang == 'PT' else
+                "Delineate watershed divide from DEM and inspect polygon over satellite imagery. "
+                "Explicit visual confirmation is mandatory to unlock Flow Module."
+            )
+
+            col_cfg, col_diag = st.columns([1.0, 1.0])
+
+            with col_cfg:
+                with st.container(border=True):
+                    st.markdown(f"##### ⚙️ {t('basin_exutory_title', lang)}")
+                    st.markdown(
+                        f"- 📍 **Local:** {p_loc}\n"
+                        f"- 🌐 **Exutório:** `{p_lat:.4f}°, {p_lon:.4f}°` (WGS84)\n"
+                        f"- ℹ️ *{t('basin_single_coord_note', lang)}*"
+                    )
+
+                    fonte_opts = [
+                        "FABDEM 30m (Recomendado)",
+                        "Copernicus GLO-30",
+                        "MERIT Hydro",
+                        "Upload GeoTIFF próprio",
+                    ]
+                    fonte_sel = st.selectbox(t('basin_mde_source', lang), fonte_opts, index=0)
+
+                    up_mde = None
+                    if "Upload" in fonte_sel:
+                        up_mde = st.file_uploader("Selecione o arquivo GeoTIFF do MDE (.tif)", type=['tif', 'tiff'])
+
+                    raio_snap = st.number_input(
+                        t('basin_snap_radius', lang),
+                        min_value=30.0,
+                        max_value=300.0,
+                        value=150.0,
+                        step=10.0,
+                        help="Distância máxima de tolerância para deslocar o exutório até o talvegue de maior acumulação."
+                    )
+
+                    btn_delinear = st.button(
+                        f"🚀 {t('basin_btn_delineate', lang)}",
+                        type="primary",
+                        use_container_width=True,
+                    )
+
+            with col_diag:
+                with st.container(border=True):
+                    st.markdown("##### 🛡️ Diagnóstico e Validação do Divisor")
+                    if b_res:
+                        snap_d = b_res.get('snap_dist_m', 0.0)
+                        conf_ana = b_res.get('conferencia_ana', {})
+                        morf = b_res.get('morfometria', {})
+
+                        # Snap badge
+                        if snap_d <= 50.0:
+                            st.success(f"✅ **Snap do Exutório:** {snap_d:.1f} m (Alinhamento excelente ao talvegue)")
+                        elif snap_d <= 150.0:
+                            st.warning(f"⚠️ **Snap do Exutório:** {snap_d:.1f} m (Dentro do limite de tolerância de 150 m)")
+                        else:
+                            st.error(f"❌ **Snap Excedido:** {snap_d:.1f} m (> 150 m). Reposicione o exutório.")
+
+                        # ANA BHO badge
+                        ana_diff = conf_ana.get('divergencia_pct', 0.0)
+                        ana_area = conf_ana.get('area_ana_km2', 0.0)
+                        if conf_ana.get('alerta'):
+                            st.warning(f"⚠️ **Conferência ANA BHO:** Divergência de {ana_diff:.1f}% ({morf.get('area_km2', 0):.2f} km² vs ANA {ana_area:.2f} km²)")
+                        else:
+                            st.success(f"✅ **Conferência ANA BHO:** Aderência de {100.0 - ana_diff:.1f}% ({morf.get('area_km2', 0):.2f} km² vs ANA {ana_area:.2f} km²)")
+
+                        # Geodetic vs UTM validation badge
+                        geod_diff = morf.get('diff_area_pct', 0.0)
+                        st.info(f"🌐 **Validação Geodésica:** Diferença UTM vs Geodésica de {geod_diff:.4f}% (< 1% rigor)")
+
+                        st.divider()
+                        st.markdown("###### 👁️ Confirmação Obrigatória do Projetista")
+                        st.caption(t('basin_confirm_warning', lang))
+
+                        is_conf = bool(st.session_state.get('bacia_confirmada', False))
+                        if not is_conf:
+                            if st.button(f"✅ {t('basin_confirm_btn', lang)}", type="primary", use_container_width=True):
+                                st.session_state.bacia_confirmada = True
+                                st.session_state.project_dirty = True
+                                st.rerun()
+                        else:
+                            st.success(f"🟢 **{t('basin_confirmed_badge', lang)}**")
+                            if st.button(f"🔄 {t('basin_undo_confirm', lang)}", use_container_width=True):
+                                st.session_state.bacia_confirmada = False
+                                st.session_state.project_dirty = True
+                                st.rerun()
+                    else:
+                        st.info("ℹ️ Clique no botão **Delinear Bacia Hidrográfica** para carregar o MDE e processar a bacia.")
+
+            if btn_delinear:
+                with st.spinner("Adquirindo MDE, calculando fluxos D8 e delineando divisor..."):
+                    try:
+                        mde_tag = 'USER_UPLOAD' if "Upload" in fonte_sel else fonte_sel.split()[0]
+                        res = basin.delinear_bacia(
+                            lon=p_lon,
+                            lat=p_lat,
+                            mde_source=mde_tag,
+                            snap_radius_m=float(raio_snap),
+                            uploaded_file=up_mde,
+                            usar_cache=False
+                        )
+                        st.session_state.bacia_results = res
+                        st.session_state.bacia_confirmada = False
+                        st.session_state.project_dirty = True
+                        st.success(f"✅ Bacia delimitada! Área: {res['morfometria']['area_km2']:.2f} km² | Talvegue: {res['morfometria']['comprimento_talvegue_km']:.2f} km")
+                        st.rerun()
+                    except basin.SnapExceededError as err:
+                        st.error(f"❌ {err}")
+                    except Exception as ex:
+                        st.error(f"Erro ao processar delineação da bacia: {ex}")
+
+            # Mapa com Leaflet / Folium
+            st.markdown("##### 🗺️ Inspeção Visual da Bacia e Talvegue sobre Satélite")
+            m_basin = folium.Map(
+                location=[p_lat, p_lon],
+                zoom_start=13,
+                tiles=None,
+                control_scale=True,
+            )
+            # Imagem de satélite como camada padrão
+            folium.TileLayer(
+                tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                attr='Esri World Imagery',
+                name='🛰️ Satélite (Esri)',
+            ).add_to(m_basin)
+            folium.TileLayer('OpenStreetMap', name='🗺️ Mapa (OSM)').add_to(m_basin)
+            folium.TileLayer(
+                tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+                attr='Esri World Topo',
+                name='⛰️ Relevo (Topo)',
+            ).add_to(m_basin)
+            folium.LayerControl(position='topright').add_to(m_basin)
+
+            # Exutório do projeto
+            folium.Marker(
+                [p_lat, p_lon],
+                popup=f"<b>📍 Exutório do Projeto</b><br>{p_loc}<br>{p_lat:.4f}°, {p_lon:.4f}°",
+                tooltip="📍 Exutório do Projeto",
+                icon=folium.Icon(color='red', icon='record'),
+            ).add_to(m_basin)
+
+            if b_res:
+                geom = b_res.get('geometria', {})
+                morf = b_res.get('morfometria', {})
+
+                # Exutório Snapped
+                s_lat = b_res.get('outlet_snapped_lat', p_lat)
+                s_lon = b_res.get('outlet_snapped_lon', p_lon)
+                folium.Marker(
+                    [s_lat, s_lon],
+                    popup=f"<b>🎯 Exutório no Talvegue (Snap: {b_res.get('snap_dist_m'):.1f} m)</b>",
+                    tooltip="🎯 Exutório Snapped",
+                    icon=folium.Icon(color='blue', icon='flag'),
+                ).add_to(m_basin)
+
+                # Polígono da Bacia
+                if 'geojson_wgs84' in geom:
+                    folium.GeoJson(
+                        geom['geojson_wgs84'],
+                        name="Divisor da Bacia",
+                        style_function=lambda x: {
+                            'color': '#2563eb',
+                            'weight': 3,
+                            'fillColor': '#3b82f6',
+                            'fillOpacity': 0.35,
+                        },
+                        tooltip=f"Bacia Hidrográfica: {morf.get('area_km2', 0):.2f} km²",
+                    ).add_to(m_basin)
+
+                # Talvegue Principal
+                if 'thalweg_geojson_wgs84' in geom:
+                    folium.GeoJson(
+                        geom['thalweg_geojson_wgs84'],
+                        name="Talvegue Principal",
+                        style_function=lambda x: {
+                            'color': '#d97706',
+                            'weight': 4,
+                        },
+                        tooltip=f"Talvegue: {morf.get('comprimento_talvegue_km', 0):.2f} km",
+                    ).add_to(m_basin)
+
+            st_folium(m_basin, height=520, use_container_width=True)
+
+            if b_res:
+                st.divider()
+                c_nav_l, c_nav_r = st.columns([1, 1])
+                with c_nav_r:
+                    if st.button("Avançar para Morfometria & Insumos 🌾 ➔", type="primary", use_container_width=True):
+                        st.session_state.step = 1
+                        st.rerun()
+
+        # ──────────────────────────────────────────────────────────────────────
+        # ETAPA 1: 🌾 Morfometria & Insumos Hidrológicos
+        # ──────────────────────────────────────────────────────────────────────
+        elif curr_step_bacia == 1:
+            st.subheader(f"🌾 {t('stepper_basin_inputs', lang)}")
+            if not b_res:
+                st.warning("⚠️ Bacia hidrográfica ainda não delineada. Retorne à etapa anterior.")
+                if st.button("⬅️ Ir para Delineação", use_container_width=True):
+                    st.session_state.step = 0
+                    st.rerun()
+            else:
+                morf = b_res['morfometria']
+                uso = b_res['uso_solo']
+
+                # KPI Cards em 4 colunas
+                k1, k2, k3, k4 = st.columns(4)
+                with k1:
+                    st.metric("Área de Drenagem", f"{morf['area_km2']:.2f} km²")
+                with k2:
+                    st.metric("Talvegue Principal", f"{morf['comprimento_talvegue_km']:.2f} km")
+                with k3:
+                    st.metric("Desnível Total (ΔH)", f"{morf['desnivel_m']:.1f} m")
+                with k4:
+                    st.metric("Declividade S10-85", f"{morf['declividade_s10_85_m_m']*100:.2f}%", f"{morf['declividade_s10_85_m_m']:.4f} m/m")
+
+                st.markdown(f"#### 📊 {t('basin_morpho_title', lang)}")
+
+                tabela_morf = pd.DataFrame([
+                    {"Parâmetro": "Área de Drenagem (A)", "Valor": f"{morf['area_km2']:.3f}", "Unidade": "km²", "Método / Referência": "SIRGAS 2000 UTM"},
+                    {"Parâmetro": "Área Geodésica Independente", "Valor": f"{morf['area_geod_km2']:.3f}", "Unidade": "km²", "Método / Referência": "Elipsoide GRS80 (Erro: {:.3f}%)".format(morf['diff_area_pct'])},
+                    {"Parâmetro": "Perímetro da Bacia (P)", "Valor": f"{morf['perimetro_km']:.3f}", "Unidade": "km", "Método / Referência": "Divisor Topográfico"},
+                    {"Parâmetro": "Comprimento Axial (Lax)", "Valor": f"{morf['comprimento_axial_km']:.3f}", "Unidade": "km", "Método / Referência": "Distância Máxima do Exutório ao Divisor"},
+                    {"Parâmetro": "Comprimento do Talvegue (L)", "Valor": f"{morf['comprimento_talvegue_km']:.3f}", "Unidade": "km", "Método / Referência": "Canal Principal (Maior Acumulação)"},
+                    {"Parâmetro": "Cota do Exutório", "Valor": f"{morf['cota_exutorio_m']:.1f}", "Unidade": "m", "Método / Referência": "MDE"},
+                    {"Parâmetro": "Cota do Ponto Mais Remoto", "Valor": f"{morf['cota_remota_m']:.1f}", "Unidade": "m", "Método / Referência": "Nascente do Talvegue"},
+                    {"Parâmetro": "Desnível Total (ΔH)", "Valor": f"{morf['desnivel_m']:.1f}", "Unidade": "m", "Método / Referência": "Cota Remota - Cota Exutório"},
+                    {"Parâmetro": "Declividade em Linha Reta", "Valor": f"{morf['declividade_reta_m_m']:.5f} ({morf['declividade_reta_m_m']*100:.2f}%)", "Unidade": "m/m (%)", "Método / Referência": "ΔH / L"},
+                    {"Parâmetro": "Declividade Taylor-Schwarz (S10-85)", "Valor": f"{morf['declividade_s10_85_m_m']:.5f} ({morf['declividade_s10_85_m_m']*100:.2f}%)", "Unidade": "m/m (%)", "Método / Referência": "Perfil 10% a 85% do Talvegue"},
+                    {"Parâmetro": "Declividade Equivalente", "Valor": f"{morf['declividade_equivalente_m_m']:.5f} ({morf['declividade_equivalente_m_m']*100:.2f}%)", "Unidade": "m/m (%)", "Método / Referência": "Trechos Ponderados Taylor-Schwarz"},
+                    {"Parâmetro": "Declividade Média da Bacia", "Valor": f"{morf['declividade_media_bacia_pct']:.2f}", "Unidade": "%", "Método / Referência": "Média das Células da Bacia"},
+                    {"Parâmetro": "Coeficiente de Compacidade (Kc)", "Valor": f"{morf['coeficiente_compacidade']:.3f}", "Unidade": "adimensional", "Método / Referência": "Gravelius (Kc = 0.28 * P / √A)"},
+                    {"Parâmetro": "Fator de Forma (Kf)", "Valor": f"{morf['fator_forma']:.3f}", "Unidade": "adimensional", "Método / Referência": "Horton (Kf = A / Lax²)"},
+                    {"Parâmetro": "Densidade de Drenagem", "Valor": f"{morf['densidade_drenagem_km_km2']:.2f}", "Unidade": "km/km²", "Método / Referência": "Canais / Área"},
+                    {"Parâmetro": "Ordem de Strahler", "Valor": f"{morf['ordem_strahler']}", "Unidade": "ordem", "Método / Referência": "Hierarquia Fluvial D8"},
+                ])
+                st.dataframe(tabela_morf, hide_index=True, use_container_width=True)
+
+                st.divider()
+                st.markdown(f"#### 🌾 {t('basin_soil_title', lang)}")
+
+                c_soil_l, c_soil_r = st.columns([1, 1])
+                with c_soil_l:
+                    soil_grp_sel = st.selectbox(
+                        "Grupo Hidrológico do Solo (SoilGrids)",
+                        ['B (Solos moderadamente profundos/permeáveis - Padrão)', 'A (Alta infiltração/arenosos)', 'C (Baixa infiltração/argilosos)', 'D (Impermeáveis/muito argilosos)'],
+                        index=0,
+                        help="Grupo hidrológico do solo segundo a classificação do SCS / SoilGrids."
+                    )
+                    grupo_letra = soil_grp_sel.split()[0]
+                    if grupo_letra != uso.get('grupo_solo', 'B'):
+                        # Recomputa classes de solo
+                        poly_utm_geom = shape(b_res['geometria']['geojson_utm'])
+                        b_res['uso_solo'] = basin.granular_uso_solo(poly_utm_geom, soil_group=grupo_letra)
+                        st.session_state.bacia_results = b_res
+                        st.session_state.project_dirty = True
+                        st.rerun()
+
+                classes_df = pd.DataFrame(uso['classes'])
+                classes_df.rename(columns={
+                    'classe': 'Classe de Uso (MapBiomas)',
+                    'area_km2': 'Área (km²)',
+                    'pct': 'Proporção (%)',
+                    'c': 'Coeficiente C',
+                    'cn': 'Curve Number (CN)'
+                }, inplace=True)
+                st.dataframe(classes_df, hide_index=True, use_container_width=True)
+
+                c_kpi_c, c_kpi_cn = st.columns(2)
+                with c_kpi_c:
+                    st.metric("Coeficiente de Runoff C Ponderado", f"{uso['c_ponderado']:.3f}")
+                with c_kpi_cn:
+                    st.metric("Curve Number CN SCS Ponderado", f"{uso['cn_ponderado']:.1f}")
+
+                # Expander de Sobrescrita Manual
+                with st.expander(f"⚙️ {t('basin_override_title', lang)}"):
+                    st.caption("Permite ao projetista sobrescrever os valores ponderados de C e CN com justificativa técnica obrigatória registrada no projeto e memorial.")
+                    tem_sobr = bool(uso.get('sobrescrita'))
+                    ativar_sobr = st.checkbox("Ativar sobrescrita manual de C e CN", value=tem_sobr)
+                    if ativar_sobr:
+                        val_c_atual = uso['sobrescrita'].get('c', uso['c_ponderado']) if tem_sobr else uso['c_ponderado']
+                        val_cn_atual = uso['sobrescrita'].get('cn', uso['cn_ponderado']) if tem_sobr else uso['cn_ponderado']
+                        motivo_atual = uso['sobrescrita'].get('motivo', '') if tem_sobr else ''
+
+                        col_s1, col_s2 = st.columns(2)
+                        novo_c = col_s1.number_input("C Adotado Manualmente", min_value=0.05, max_value=0.99, value=float(val_c_atual), step=0.01)
+                        novo_cn = col_s2.number_input("CN Adotado Manualmente", min_value=30.0, max_value=99.0, value=float(val_cn_atual), step=1.0)
+                        novo_motivo = st.text_area(t('basin_override_reason', lang), value=motivo_atual, placeholder="Ex.: Ajuste do CN para condição de saturação AMC III devido à alta umidade da bacia.")
+
+                        if st.button("Salvar Sobrescrita Manual", type="primary"):
+                            uso['sobrescrita'] = {
+                                'c': round(novo_c, 3),
+                                'cn': round(novo_cn, 1),
+                                'motivo': novo_motivo.strip()
+                            }
+                            st.session_state.bacia_results = b_res
+                            st.session_state.project_dirty = True
+                            st.success("✅ Sobrescrita manual registrada com sucesso no projeto!")
+                            st.rerun()
+                    else:
+                        if tem_sobr:
+                            uso['sobrescrita'] = None
+                            st.session_state.bacia_results = b_res
+                            st.session_state.project_dirty = True
+                            st.rerun()
+
+                st.divider()
+                c_btn_voltar, c_btn_avancar = st.columns([1, 1])
+                with c_btn_voltar:
+                    if st.button("⬅️ Voltar para Delineação", use_container_width=True):
+                        st.session_state.step = 0
+                        st.rerun()
+                with c_btn_avancar:
+                    is_conf = bool(st.session_state.get('bacia_confirmada', False))
+                    btn_vazao_help = "Avançar para o cálculo das vazões de projeto" if is_conf else "Módulo Vazão bloqueado: confirme a delimitação da bacia na etapa 1 antes de prosseguir."
+                    if st.button(
+                        "Avançar para Módulo Vazão 🌊 ➔",
+                        type="primary" if is_conf else "secondary",
+                        disabled=not is_conf,
+                        help=btn_vazao_help,
+                        use_container_width=True
+                    ):
+                        st.session_state.active_module = 'vazao'
+                        st.session_state.step = 0
+                        st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DISPATCH DO MÓDULO VAZÃO (TEMPO DE CONCENTRAÇÃO · VAZÃO DE PROJETO)
+# ══════════════════════════════════════════════════════════════════════════════
+elif active_mod == 'vazao':
+    status_v = module_status('vazao')
+    curr_step_vazao = st.session_state.get('step', 0)
+
+    if status_v == 'locked':
+        st.error(f"🔒 **{t('mod_vazao', lang)} {t('status_locked', lang)}**")
+        motivos = []
+        if module_status('idf') != 'done':
+            motivos.append("- **Módulo IDF pendente:** As curvas IDF precisam estar calculadas e com consistência física válida.")
+        if not st.session_state.get('bacia_confirmada', False):
+            motivos.append("- **Módulo Bacia pendente:** A bacia hidrográfica precisa ser delineada e confirmada visualmente pelo projetista.")
+        st.markdown("\n".join(motivos))
+    else:
+        # Extração e preparação dos insumos de IDF e Bacia
+        results_idf = st.session_state.get('results', {}) or {}
+        sherman_params = results_idf.get('sherman_params', {}) or {}
+        bacia_res = st.session_state.get('bacia_results', {}) or {}
+        params_b = bacia_res.get('parametros', {}) or {}
+        uso_b = bacia_res.get('uso_solo', {}) or {}
+
+        area_km2 = float(params_b.get('area_km2', 1.0))
+        talvegue_km = float(params_b.get('talvegue_km', params_b.get('comprimento_talvegue_km', 1.0)))
+        desnivel_m = float(params_b.get('desnivel_m', 10.0))
+        declividade_m_m = float(params_b.get('declividade_talvegue_m_m', (desnivel_m / (talvegue_km * 1000.0)) if talvegue_km > 0 else 0.01))
+        declividade_media_pct = float(params_b.get('declividade_media_pct', params_b.get('declividade_bacia_pct', 3.0)))
+
+        # Insumos C e CN com verificação de sobrescrita manual
+        sobr = uso_b.get('sobrescrita')
+        if sobr and isinstance(sobr, dict):
+            c_adotado = float(sobr.get('c', uso_b.get('c_ponderado', 0.35)))
+            cn_adotado = float(sobr.get('cn', uso_b.get('cn_ponderado', 70.0)))
+        else:
+            c_adotado = float(uso_b.get('c_ponderado', 0.35))
+            cn_adotado = float(uso_b.get('cn_ponderado', 70.0))
+
+        tr_projeto = float(st.session_state.get('proj_tr', 25))
+
+        # Cálculo das 6 fórmulas de tempo de concentração
+        tc_data = discharge.calcular_tempos_concentracao(
+            area_km2=area_km2,
+            comprimento_talvegue_km=talvegue_km,
+            desnivel_m=desnivel_m,
+            declividade_m_m=declividade_m_m,
+            declividade_media_pct=declividade_media_pct,
+            cn=cn_adotado
+        )
+
+        # ── Etapa 0: Tempo de Concentração ─────────────────────────────────────
+        if curr_step_vazao == 0:
+            st.subheader(f"⏱️ {t('flow_tc_title', lang)}")
+            st.caption(t('flow_tc_desc', lang))
+
+            # Métricas de dispersão
+            stats = tc_data['estatisticas']
+            c_kpi1, c_kpi2, c_kpi3, c_kpi4, c_kpi5 = st.columns(5)
+            c_kpi1.metric("Mínimo", f"{stats['minimo_min']:.1f} min")
+            c_kpi2.metric("Média", f"{stats['medio_min']:.1f} min")
+            c_kpi3.metric("Mediana", f"{stats['mediana_min']:.1f} min")
+            c_kpi4.metric("Máximo", f"{stats['maximo_min']:.1f} min")
+            c_kpi5.metric("Dispersão", f"{stats['dispersao_pct']:.1f}%", help="Dispersão relativa: (Máximo - Mínimo) / Média")
+
+            st.markdown("##### 📋 Tabela Comparativa de Fórmulas e Domínios de Validade")
+            tc_rows = []
+            for f in tc_data['formulas']:
+                status_icon = "✅ No domínio" if f['no_dominio'] else "⚠️ Fora do domínio"
+                tc_rows.append({
+                    'Fórmula / Método': f['nome'],
+                    'tc (min)': f['tc_min'],
+                    'tc (horas)': f['tc_h'],
+                    'Domínio de Calibração': f['dominio'],
+                    'Validade': status_icon,
+                    'Observação / Restrição': f['aviso'] if f['aviso'] else 'Em conformidade com as características da bacia',
+                })
+            df_tc = pd.DataFrame(tc_rows)
+            st.dataframe(df_tc, hide_index=False, use_container_width=True)
+
+            # Adoção explícita pelo projetista
+            st.divider()
+            st.markdown("##### ✍️ Adoção do Tempo de Concentração de Projeto")
+            st.info(
+                "ℹ️ **Regra de Projeto:** A dispersão entre as estimativas empíricas é uma informação técnica indispensável. "
+                "Nenhum valor único é imposto silenciosamente pelo sistema. A escolha do valor final deve ser explicitada e "
+                "justificada tecnicamente pelo responsável técnico."
+            )
+
+            # Opções de fórmula
+            opcoes_formulas = [f['id'] for f in tc_data['formulas']] + ['manual']
+            nomes_opcoes = {
+                f['id']: f"{f['nome']} ({f['tc_min']} min — {'No domínio' if f['no_dominio'] else 'Fora do domínio'})"
+                for f in tc_data['formulas']
+            }
+            nomes_opcoes['manual'] = "Valor Arbitrado / Sobrescrita Direta"
+
+            # Fórmula default recomendada (preferência por no_dominio)
+            formula_padrao = 'scs_lag'
+            if area_km2 >= 5.0 and any(f['id'] == 'giandotti' and f['no_dominio'] for f in tc_data['formulas']):
+                formula_padrao = 'giandotti'
+            elif area_km2 <= 4.0 and any(f['id'] == 'kirpich' and f['no_dominio'] for f in tc_data['formulas']):
+                formula_padrao = 'kirpich'
+
+            f_atual = st.session_state.get('formula_tc_adotada') or formula_padrao
+            if f_atual not in opcoes_formulas:
+                f_atual = formula_padrao
+
+            idx_padrao = opcoes_formulas.index(f_atual)
+            formula_escolhida = st.selectbox(
+                t('flow_select_formula', lang),
+                options=opcoes_formulas,
+                index=idx_padrao,
+                format_func=lambda fid: nomes_opcoes.get(fid, fid)
+            )
+
+            # Valor sugerido conforme fórmula
+            if formula_escolhida != 'manual':
+                item_f = next((f for f in tc_data['formulas'] if f['id'] == formula_escolhida), None)
+                val_sugerido = float(item_f['tc_min']) if item_f else float(stats['mediana_min'])
+                fora_dom = not item_f['no_dominio'] if item_f else False
+            else:
+                val_sugerido = float(st.session_state.get('tc_adotado_min') or stats['mediana_min'])
+                fora_dom = False
+
+            col_tc_val, col_tc_warn = st.columns([1, 2])
+            tc_final = col_tc_val.number_input(
+                t('flow_adopted_tc', lang),
+                min_value=5.0,
+                max_value=1440.0,
+                value=float(st.session_state.get('tc_adotado_min') or val_sugerido),
+                step=1.0,
+                help="Tempo de concentração adotado para a leitura da intensidade de precipitação."
+            )
+
+            if fora_dom:
+                col_tc_warn.warning(
+                    f"⚠️ **Atenção:** A fórmula `{nomes_opcoes.get(formula_escolhida, formula_escolhida)}` está fora do seu "
+                    f"domínio físico de calibração para esta bacia hidrográfica. Justifique no campo abaixo o embasamento da escolha."
+                )
+            else:
+                col_tc_warn.success(f"✅ Fórmula em conformidade com o domínio físico de calibração da bacia.")
+
+            justif_atual = st.session_state.get('justificativa_tc', '')
+            justif_tc = st.text_area(
+                t('flow_adoption_reason', lang),
+                value=justif_atual,
+                placeholder="Ex.: Adotada a fórmula SCS Lag por representar bacias com uso do solo homogêneo e tempo de retardo calibrado para o CN do projeto."
+            )
+
+            st.divider()
+            c_btn_voltar, c_btn_avancar = st.columns([1, 1])
+            with c_btn_voltar:
+                if st.button("⬅️ Voltar para Módulo Bacia", use_container_width=True):
+                    st.session_state.active_module = 'bacia'
+                    st.session_state.step = 1
+                    st.rerun()
+
+            with c_btn_avancar:
+                if st.button("Salvar Adoção e Avançar para Vazão de Projeto 🌊 ➔", type="primary", use_container_width=True):
+                    st.session_state.tc_adotado_min = round(float(tc_final), 1)
+                    st.session_state.formula_tc_adotada = formula_escolhida
+                    st.session_state.justificativa_tc = justif_tc.strip()
+                    st.session_state.tc_fora_dominio = fora_dom
+                    st.session_state.tc_data = tc_data
+                    st.session_state.project_dirty = True
+                    st.session_state.step = 1
+                    st.rerun()
+
+        # ── Etapa 1: Vazão de Projeto ──────────────────────────────────────────
+        else:
+            st.subheader(f"🌊 {t('flow_design_title', lang)}")
+
+            # Garante que tc adotado existe
+            tc_adotado_val = float(st.session_state.get('tc_adotado_min') or tc_data['estatisticas']['mediana_min'])
+            formula_adotada_val = st.session_state.get('formula_tc_adotada', 'scs_lag')
+
+            # Leitura da intensidade de chuva pela equação IDF ajustada
+            i_chuva = discharge.calcular_intensidade_sherman(sherman_params, tc_adotado_val, tr_projeto)
+
+            # Faixa contextual superior
+            with st.container(border=True):
+                c_ctx1, c_ctx2, c_ctx3, c_ctx4 = st.columns(4)
+                c_ctx1.markdown(f"**Área da Bacia:**<br>`{area_km2:.3f} km²` ({area_km2 * 100:.1f} ha)", unsafe_allow_html=True)
+                c_ctx2.markdown(f"**tc Adotado:**<br>`{tc_adotado_val:.1f} min` ({formula_adotada_val})", unsafe_allow_html=True)
+                c_ctx3.markdown(f"**Período de Retorno (TR):**<br>`{tr_projeto:.0f} anos`", unsafe_allow_html=True)
+                c_ctx4.markdown(f"**Intensidade IDF (i):**<br>`{i_chuva:.2f} mm/h`", unsafe_allow_html=True)
+
+            st.markdown("##### ⚖️ Decisão do Método Hidrológico (DNIT IPR-724)")
+
+            # Verificação estrita do limiar normativo do DNIT IPR-724 (1,00 km² / 100 ha)
+            limiar_ipr = discharge.LIMIAR_AREA_RACIONAL_IPR724_KM2
+            racional_bloqueado = (area_km2 > limiar_ipr)
+
+            if racional_bloqueado:
+                # O botão/opção permanece visível e riscado, conforme requisito pedagógico estrito
+                st.markdown(
+                    f"<div style='background-color:#fffbeb; border:1.5px solid #d97706; border-radius:8px; padding:14px; margin-bottom:16px;'>"
+                    f"<div style='display:flex; align-items:center; gap:10px; margin-bottom:6px;'>"
+                    f"<span style='text-decoration:line-through; font-weight:700; color:#92400e; font-size:1.15em;'>{t('flow_method_racional', lang)}</span>"
+                    f"<span style='background-color:#fee2e2; color:#991b1b; padding:2px 8px; border-radius:4px; font-weight:700; font-size:0.80em;'>🔒 BLOQUEADO</span>"
+                    f"</div>"
+                    f"<p style='color:#78350f; margin:0; font-size:0.92em; line-height:1.45;'>"
+                    f"<b>Justificativa Normativa (DNIT IPR-724, item 3.2.1):</b> A área da bacia (<b>{area_km2:.3f} km² / {area_km2 * 100:.1f} ha</b>) "
+                    f"excede o limite de <b>{limiar_ipr:.2f} km² (100 ha)</b>. Os efeitos de amortecimento na calha principal e a variabilidade "
+                    f"espacial da precipitação invalidam a hipótese de chuva uniforme em regime permanente do Método Racional. "
+                    f"O dimensionamento hidrológico é conduzido obrigatoriamente pelo <b>Hidrograma Unitário SCS (NRCS)</b>."
+                    f"</p></div>",
+                    unsafe_allow_html=True
+                )
+                metodo_selecionado = 'scs'
+            else:
+                st.success(
+                    f"✅ **Área da Bacia Elegível ({area_km2:.3f} km² ≤ {limiar_ipr:.2f} km²):** "
+                    f"Tanto o Método Racional quanto o Hidrograma Unitário SCS são métodos aplicáveis."
+                )
+                metodo_selecionado = st.radio(
+                    "Selecione o método de cálculo:",
+                    options=['racional', 'scs'],
+                    format_func=lambda m: "Método Racional (Recomendado pelo DNIT IPR-724 para microbacias)" if m == 'racional' else "Hidrograma Unitário Sintético SCS (NRCS)"
+                )
+
+            # Execução do cálculo de vazão integrado
+            res_vazao = discharge.calcular_vazao_projeto(
+                area_km2=area_km2,
+                c_runoff=c_adotado,
+                cn=cn_adotado,
+                tc_adotado_min=tc_adotado_val,
+                formula_tc_adotada=formula_adotada_val,
+                sherman_params=sherman_params,
+                tr_anos=tr_projeto,
+                metodo_preferido=metodo_selecionado
+            )
+            res_vazao['tc_data'] = tc_data
+
+            # Salva o resultado no session_state para auditoria, persistência e destravamento
+            st.session_state.vazao_results = res_vazao
+            st.session_state.q_projeto_m3s = res_vazao['q_projeto_m3s']
+            st.session_state.metodo_adotado = res_vazao['metodo_adotado']
+
+            st.divider()
+            st.markdown(f"### 📊 {t('flow_results_title', lang)}")
+
+            # Exibição conforme o método adotado
+            if res_vazao['metodo_adotado'] == 'racional':
+                q_p = res_vazao['q_projeto_m3s']
+                c_res1, c_res2, c_res3, c_res4 = st.columns(4)
+                c_res1.metric("Vazão de Projeto Q", f"{q_p:.2f} m³/s")
+                c_res2.metric("Coeficiente de Runoff C", f"{c_adotado:.3f}")
+                c_res3.metric("Intensidade da Chuva i", f"{i_chuva:.2f} mm/h")
+                c_res4.metric("Área de Contribuição A", f"{area_km2:.3f} km²")
+
+                st.markdown(
+                    f"<div style='background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:12px; margin-top:8px;'>"
+                    f"<b>Equação do Método Racional:</b><br>"
+                    f"$$Q = \\frac{{C \\cdot i \\cdot A}}{{3,6}} = \\frac{{{c_adotado:.3f} \\cdot {i_chuva:.2f} \\cdot {area_km2:.3f}}}{{3,6}} = {q_p:.2f}\\text{{ m}}^3/\\text{{s}}$$"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                # Hidrograma Unitário SCS
+                scs_res = res_vazao['scs']
+                q_pico_val = scs_res['q_pico_m3s']
+                tp_val_h = scs_res['tempo_pico_h']
+                vol_val = scs_res['volume_total_m3']
+                pe_val = scs_res['lamina_efetiva_mm']
+                ptot_val = scs_res['lamina_total_mm']
+
+                c_kpi_v1, c_kpi_v2, c_kpi_v3, c_kpi_v4 = st.columns(4)
+                c_kpi_v1.metric("Vazão de Pico Qp", f"{q_pico_val:.2f} m³/s")
+                c_kpi_v2.metric("Tempo ao Pico tp", f"{tp_val_h:.2f} h", help=f"{scs_res['tempo_pico_min']:.0f} minutos")
+                c_kpi_v3.metric("Volume Escoado", f"{vol_val:,.0f} m³")
+                c_kpi_v4.metric("Chuva Efetiva (Pe)", f"{pe_val:.1f} mm", help=f"Chuva Total P = {ptot_val:.1f} mm")
+
+                # Gráficos interativos Plotly
+                df_hidro = scs_res['df_hidrograma']
+                col_g1, col_g2 = st.columns(2)
+                with col_g1:
+                    fig_h = fig_hydrograph_scs(df_hidro, q_pico_val, tp_val_h, lang=lang)
+                    st.plotly_chart(fig_h, use_container_width=True)
+                with col_g2:
+                    fig_b = fig_hyetograph_blocks(df_hidro, lang=lang)
+                    st.plotly_chart(fig_b, use_container_width=True)
+
+                with st.expander("🔍 Detalhes Técnicos e Parâmetros Intermediários SCS"):
+                    c_det1, c_det2 = st.columns(2)
+                    with c_det1:
+                        st.markdown(f"- **Fator de Abatimento Espacial (ARF):** `{scs_res['coef_abatimento_espacial']:.3f}`")
+                        st.markdown(f"- **Tempo de Pico Unitário (tp):** `{scs_res['tempo_pico_unitario_tp_min']:.1f} min`")
+                        st.markdown(f"- **Tempo de Base do HU (tb):** `{scs_res['tempo_base_tb_min']:.1f} min`")
+                    with c_det2:
+                        st.markdown(f"- **Vazão de Pico Unitária (qu):** `{scs_res['vazao_pico_unitaria_qu_m3s_mm']:.3f} m³/s/mm`")
+                        st.markdown(f"- **Curve Number (CN):** `{cn_adotado:.1f}`")
+                        st.markdown(f"- **Coeficiente C Equivalente:** `{c_adotado:.3f}`")
+
+                st.markdown("##### 📋 Tabela da Convolução do Hidrograma")
+                st.dataframe(df_hidro, hide_index=False, use_container_width=True)
+
+                csv_hidro = df_hidro.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "📥 Baixar Hidrograma em CSV",
+                    data=csv_hidro,
+                    file_name=f"hidrograma_scs_tr{int(tr_projeto)}.csv",
+                    mime="text/csv"
+                )
+
+            # Barra de ações final
+            st.divider()
+            c_nav1, c_nav2 = st.columns(2)
+            with c_nav1:
+                if st.button("⬅️ Voltar para Tempo de Concentração", use_container_width=True):
+                    st.session_state.step = 0
+                    st.rerun()
+            with c_nav2:
+                if st.button("💾 Salvar Projeto e Exportar (.siih)", type="primary", use_container_width=True):
+                    st.session_state.active_module = 'projeto'
+                    st.session_state.step = 1
+                    st.session_state.project_dirty = True
+                    st.rerun()
+
 
 # ── Rodapé / créditos ─────────────────────────────────────────────────────────
 st.divider()
